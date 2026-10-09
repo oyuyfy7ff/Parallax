@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="str_loop">Loop</string>
-    <string name="app_name">LibreCuts</string>
+    <string name="app_name">Parallax</string>
     <string name="trim">Cortar</string>
     <string name="split">Dividir</string>
     <string name="export">Exportar</string>
