@@ -5082,6 +5082,107 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
+    // ── Music preview on separate players (patched) ──
+    private val musicPlayers = HashMap<Any, com.google.android.exoplayer2.ExoPlayer>()
+    private val musicPlayerUris = HashMap<Any, android.net.Uri>()
+    private val musicHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val musicSyncRunnable = object : Runnable {
+        override fun run() {
+            syncMusicPlayers(false)
+            if (::player.isInitialized && player.isPlaying) {
+                musicHandler.postDelayed(this, 250)
+            }
+        }
+    }
+
+    private fun setupMusicSync() {
+        player.addListener(object : com.google.android.exoplayer2.Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                syncMusicPlayers(true)
+                musicHandler.removeCallbacks(musicSyncRunnable)
+                if (isPlaying) musicHandler.postDelayed(musicSyncRunnable, 250)
+            }
+
+            override fun onPositionDiscontinuity(reason: Int) {
+                syncMusicPlayers(true)
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                syncMusicPlayers(true)
+            }
+        })
+    }
+
+    private fun syncMusicPlayers(forceSeek: Boolean) {
+        try {
+            if (!::player.isInitialized) return
+            val ops = viewModel.project.value?.operations
+                ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.AddBackgroundAudio>()
+                ?: emptyList()
+
+            // release players of deleted tracks
+            val activeIds = HashSet<Any>()
+            ops.forEach { activeIds.add(it.id) }
+            val iter = musicPlayers.entries.iterator()
+            while (iter.hasNext()) {
+                val entry = iter.next()
+                if (!activeIds.contains(entry.key)) {
+                    try { entry.value.release() } catch (_: Exception) {}
+                    musicPlayerUris.remove(entry.key)
+                    iter.remove()
+                }
+            }
+
+            // while showing a rendered preview clip, its audio is already mixed
+            if (isShowingPreview || ops.isEmpty()) {
+                musicPlayers.values.forEach { it.playWhenReady = false }
+                return
+            }
+
+            val globalPos = getGlobalPosition()
+            val total = getTotalSequenceDuration()
+            val mainPlaying = player.isPlaying
+
+            for (op in ops) {
+                val start = op.startTimeMs ?: 0L
+                val end = op.endTimeMs ?: total
+                val existing = musicPlayers[op.id]
+                val mp = if (existing != null && musicPlayerUris[op.id] == op.audioUri) {
+                    existing
+                } else {
+                    existing?.release()
+                    val created = com.google.android.exoplayer2.ExoPlayer.Builder(this).build()
+                    created.setMediaItem(com.google.android.exoplayer2.MediaItem.fromUri(op.audioUri))
+                    created.prepare()
+                    musicPlayers[op.id] = created
+                    musicPlayerUris[op.id] = op.audioUri
+                    created
+                }
+                mp.volume = op.volume.coerceIn(0f, 1f)
+
+                val inRange = globalPos >= start && globalPos < end
+                val target = op.internalStartMs + (globalPos - start)
+                val pastInternalEnd = op.internalEndMs > 0L && target >= op.internalEndMs
+                if (inRange && !pastInternalEnd) {
+                    val drift = Math.abs(mp.currentPosition - target)
+                    if (forceSeek || drift > 200L) mp.seekTo(target)
+                    mp.playWhenReady = mainPlaying
+                } else {
+                    mp.playWhenReady = false
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "syncMusicPlayers failed: ${e.message}")
+        }
+    }
+
+    private fun releaseMusicPlayers() {
+        musicHandler.removeCallbacksAndMessages(null)
+        musicPlayers.values.forEach { try { it.release() } catch (_: Exception) {} }
+        musicPlayers.clear()
+        musicPlayerUris.clear()
+    }
+
     private fun setupExoPlayer() {
         val projectUri = intent.getParcelableExtra<Uri>("PROJECT_URI")
         if (projectUri != null) {
@@ -5121,6 +5222,7 @@ class VideoEditingActivity : AppCompatActivity() {
         
         if (videoUri != null) {
             player = ExoPlayer.Builder(this).build()
+            setupMusicSync()
             playerView.player = player
             showLoading("Loading...")
 
@@ -5904,7 +6006,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
         val mediaSourceFactory = com.google.android.exoplayer2.source.DefaultMediaSourceFactory(this)
         
-        val exoAudioOps = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.AddBackgroundAudio>() ?: emptyList()
+        val exoAudioOps = emptyList<com.tharunbirla.librecuts.models.EditOperation.AddBackgroundAudio>()
         
         val boundaries = mutableSetOf<Long>()
         boundaries.add(0L)
@@ -7653,6 +7755,7 @@ class VideoEditingActivity : AppCompatActivity() {
         previewFile?.delete()
         super.onDestroy()
         if (::player.isInitialized) {
+            releaseMusicPlayers()
             player.release()
         }
         ffmpegEngine.cleanup()
