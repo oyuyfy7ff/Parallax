@@ -8707,6 +8707,67 @@ class VideoEditingActivity : AppCompatActivity() {
         } else {
             actionBtn?.setImageResource(R.drawable.ic_keyframe_add)
         }
+        updateKeyframeGraph(globalTimeMs)
+    }
+
+    private fun updateKeyframeGraph(globalTimeMs: Long) {
+        val graph = keyframeEditingToolbar?.findViewById<com.tharunbirla.librecuts.customviews.KeyframeGraphView>(R.id.graphKeyframeEasing) ?: return
+        val selectedId = viewModel.selectedOperationId.value
+        val op = viewModel.project.value?.operations?.find { it.id == selectedId }
+        var list: List<EditOperation.KeyframePoint>? = null
+        var rel = 0L
+        when (op) {
+            is EditOperation.AddImageOverlay -> {
+                rel = globalTimeMs - (op.startTimeMs ?: 0L)
+                list = when (activeKeyframeProperty) {
+                    "Position" -> op.positionKeyframes
+                    "Opacity" -> op.opacityKeyframes
+                    "Speed" -> op.speedKeyframes
+                    else -> null
+                }
+            }
+            is EditOperation.AddText -> {
+                rel = globalTimeMs - (op.startTimeMs ?: 0L)
+                list = when (activeKeyframeProperty) {
+                    "Position" -> op.positionKeyframes
+                    "Opacity" -> op.opacityKeyframes
+                    else -> null
+                }
+            }
+            else -> {}
+        }
+        val kf = list?.firstOrNull { Math.abs(it.timeMs - rel) < 150L }
+        if (kf == null) {
+            graph.visibility = View.GONE
+            return
+        }
+        graph.visibility = View.VISIBLE
+        graph.easingType = kf.interpolationType
+        val prop = activeKeyframeProperty
+        val relFinal = rel
+        graph.onEasingChange = { type -> setKeyframeEasing(prop, relFinal, type) }
+    }
+
+    private fun setKeyframeEasing(prop: String, rel: Long, type: String) {
+        val selectedId = viewModel.selectedOperationId.value
+        val op = viewModel.project.value?.operations?.find { it.id == selectedId } ?: return
+        fun retag(l: List<EditOperation.KeyframePoint>) = l.map {
+            if (Math.abs(it.timeMs - rel) < 150L) it.copy(interpolationType = type) else it
+        }
+        when (op) {
+            is EditOperation.AddImageOverlay -> when (prop) {
+                "Position" -> viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
+                "Opacity" -> viewModel.updateOperation(op.copy(opacityKeyframes = retag(op.opacityKeyframes)))
+                "Speed" -> viewModel.updateOperation(op.copy(speedKeyframes = retag(op.speedKeyframes)))
+                else -> {}
+            }
+            is EditOperation.AddText -> when (prop) {
+                "Position" -> viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
+                "Opacity" -> viewModel.updateOperation(op.copy(opacityKeyframes = retag(op.opacityKeyframes)))
+                else -> {}
+            }
+            else -> {}
+        }
     }
 
     private fun updateDraggableOverlayFromKeyframes(globalTimeMs: Long) {
