@@ -319,7 +319,15 @@ class VideoEditingViewModel : ViewModel() {
             val diffVal = v2 - v1
             val diffTime = t2 - t1
             val segmentExpr = if (diffTime > 0) {
-                "$v1 + ($diffVal) * ($tRel - $t1) / ($diffTime)"
+                val pe = "(($tRel - $t1) / ($diffTime))"
+                val shaped = when (k1.interpolationType) {
+                    "ease_in" -> "($pe*$pe)"
+                    "ease_out" -> "($pe*(2-$pe))"
+                    "ease_in_out" -> "($pe*$pe*(3-2*$pe))"
+                    "hold" -> "0"
+                    else -> pe
+                }
+                "$v1 + ($diffVal) * $shaped" 
             } else {
                 v1.toString()
             }

@@ -142,7 +142,7 @@ sealed class EditOperation : Serializable {
                 val k1 = sorted[i]
                 val k2 = sorted[i + 1]
                 if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
+                    val progress = easeProgress(k1.interpolationType, (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs))
                     return Pair(
                         k1.valueX + progress * (k2.valueX - k1.valueX),
                         k1.valueY + progress * (k2.valueY - k1.valueY)
@@ -162,7 +162,7 @@ sealed class EditOperation : Serializable {
                 val k1 = sorted[i]
                 val k2 = sorted[i + 1]
                 if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
+                    val progress = easeProgress(k1.interpolationType, (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs))
                     return k1.valueX + progress * (k2.valueX - k1.valueX)
                 }
             }
@@ -178,7 +178,7 @@ sealed class EditOperation : Serializable {
                 val k1 = sorted[i]
                 val k2 = sorted[i + 1]
                 if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
+                    val progress = easeProgress(k1.interpolationType, (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs))
                     return k1.valueX + progress * (k2.valueX - k1.valueX)
                 }
             }
@@ -194,7 +194,7 @@ sealed class EditOperation : Serializable {
                 val k1 = sorted[i]
                 val k2 = sorted[i + 1]
                 if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
+                    val progress = easeProgress(k1.interpolationType, (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs))
                     return k1.valueX + progress * (k2.valueX - k1.valueX)
                 }
             }
@@ -381,7 +381,7 @@ sealed class EditOperation : Serializable {
                 val i = k.indexOfLast { it.timeMs <= t }
                 val a = k[i]
                 val b = k[i + 1]
-                val p = (t - a.timeMs).toFloat() / (b.timeMs - a.timeMs)
+                val p = easeProgress(a.interpolationType, (t - a.timeMs).toFloat() / (b.timeMs - a.timeMs))
                 x = a.valueX + p * (b.valueX - a.valueX)
                 y = a.valueY + p * (b.valueY - a.valueY)
             }
@@ -531,4 +531,13 @@ fun List<EditOperation>.parentOffsetAt(parentId: String?, absMs: Long): Pair<Flo
     if (parentId == null) return Pair(0f, 0f)
     val n = this.firstOrNull { it is EditOperation.NullLayer && it.id == parentId } as? EditOperation.NullLayer
     return n?.offsetAt(absMs) ?: Pair(0f, 0f)
+}
+
+
+fun easeProgress(type: String, p: Float): Float = when (type) {
+    "ease_in" -> p * p
+    "ease_out" -> p * (2f - p)
+    "ease_in_out" -> p * p * (3f - 2f * p)
+    "hold" -> 0f
+    else -> p
 }
