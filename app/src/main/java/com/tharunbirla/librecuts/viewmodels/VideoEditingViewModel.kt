@@ -190,7 +190,7 @@ class VideoEditingViewModel : ViewModel() {
     }
 
     /** Build a drawtext filter expression for a text operation. */
-    private fun buildDrawtextExpr(op: EditOperation.AddText, fontFilePath: String?): String {
+    private fun buildDrawtextExpr(op: EditOperation.AddText, fontFilePath: String?, allOps: List<EditOperation> = emptyList()): String {
         val escapedText = op.text
             .replace("\\", "\\\\")
             .replace("'", "\\\\'")
@@ -212,9 +212,9 @@ class VideoEditingViewModel : ViewModel() {
         val positionPart = if (op.positionKeyframes.isNotEmpty()) {
             val xExpr = buildFFmpegInterpolationExpr(op.positionKeyframes, useValueY = false, defaultValue = op.relativeX ?: 0.5f, startTimeMs = op.startTimeMs ?: 0L)
             val yExpr = buildFFmpegInterpolationExpr(op.positionKeyframes, useValueY = true, defaultValue = op.relativeY ?: 0.5f, startTimeMs = op.startTimeMs ?: 0L)
-            "x='(w*($xExpr))-(tw/2)':y='(h*($yExpr))-(th/2)'"
+            "x='(w*($xExpr))-(tw/2)${nullOffsetExpr(allOps, op.parentId, false, "w")}':y='(h*($yExpr))-(th/2)${nullOffsetExpr(allOps, op.parentId, true, "h")}'"
         } else if (op.hasCustomPosition()) {
-            "x='(w*${op.relativeX})-(tw/2)':y='(h*${op.relativeY})-(th/2)'"
+            "x='(w*${op.relativeX})-(tw/2)${nullOffsetExpr(allOps, op.parentId, false, "w")}':y='(h*${op.relativeY})-(th/2)${nullOffsetExpr(allOps, op.parentId, true, "h")}'"
         } else {
             op.position.ffmpegParam
         }
@@ -276,6 +276,15 @@ class VideoEditingViewModel : ViewModel() {
         }
 
         return if (mc.isInverted) "(255 - ($shapeExpr))" else "($shapeExpr)"
+    }
+
+    private fun nullOffsetExpr(allOps: List<EditOperation>, parentId: String?, useY: Boolean, scaleVar: String): String {
+        if (parentId == null) return ""
+        val n = allOps.firstOrNull { it is EditOperation.NullLayer && it.id == parentId } as? EditOperation.NullLayer ?: return ""
+        if (n.positionKeyframes.isEmpty()) return ""
+        val rest = if (useY) n.restY else n.restX
+        val e = buildFFmpegInterpolationExpr(n.positionKeyframes, useY, rest, n.startTimeMs ?: 0L)
+        return "+($scaleVar*(($e)-($rest)))"
     }
 
     private fun buildFFmpegInterpolationExpr(
@@ -541,15 +550,15 @@ class VideoEditingViewModel : ViewModel() {
                         
                         val overlayX = if (op.positionKeyframes.isNotEmpty()) {
                             val xExpr = buildFFmpegInterpolationExpr(op.positionKeyframes, useValueY = false, defaultValue = op.relativeX, startTimeMs = op.startTimeMs ?: 0L)
-                            "x='(W*($xExpr))-(w/2)'"
+                            "x='(W*($xExpr))-(w/2)${nullOffsetExpr(operations, op.parentId, false, "W")}'"
                         } else {
-                            "x='(W*${op.relativeX})-(w/2)'"
+                            "x='(W*${op.relativeX})-(w/2)${nullOffsetExpr(operations, op.parentId, false, "W")}'"
                         }
                         val overlayY = if (op.positionKeyframes.isNotEmpty()) {
                             val yExpr = buildFFmpegInterpolationExpr(op.positionKeyframes, useValueY = true, defaultValue = op.relativeY, startTimeMs = op.startTimeMs ?: 0L)
-                            "y='(H*($yExpr))-(h/2)'"
+                            "y='(H*($yExpr))-(h/2)${nullOffsetExpr(operations, op.parentId, true, "H")}'"
                         } else {
-                            "y='(H*${op.relativeY})-(h/2)'"
+                            "y='(H*${op.relativeY})-(h/2)${nullOffsetExpr(operations, op.parentId, true, "H")}'"
                         }
                         
                         stages.add("${refVidLabel}${rotatedImgLabel}overlay=$overlayX:$overlayY${shortestPart}${enablePart}${nextLabel}")

@@ -1,5 +1,7 @@
 package com.tharunbirla.librecuts.customviews
 
+import com.tharunbirla.librecuts.models.parentOffsetAt
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -54,6 +56,8 @@ class ImageOverlayView @JvmOverloads constructor(
             field = value
             invalidate()
         }
+
+    var allOperations: List<EditOperation> = emptyList()
 
     fun setImageOperations(operations: List<EditOperation.AddImageOverlay>) {
         this.imageOperations = operations
@@ -291,11 +295,13 @@ class ImageOverlayView @JvmOverloads constructor(
                           path.endsWith(".3gp", ignoreCase = true)
 
             val relativeTimeMs = currentPositionMs - start
-            val interpolatedPos = if (op.positionKeyframes.isNotEmpty()) {
+            val interpolatedPosRaw = if (op.positionKeyframes.isNotEmpty()) {
                 interpolateKeyframePosition(op.positionKeyframes, relativeTimeMs, op.relativeX, op.relativeY)
             } else {
                 Pair(op.relativeX, op.relativeY)
             }
+            val parentOff = allOperations.parentOffsetAt(op.parentId, currentPositionMs)
+            val interpolatedPos = Pair(interpolatedPosRaw.first + parentOff.first, interpolatedPosRaw.second + parentOff.second)
             val interpolatedOpacity = if (op.opacityKeyframes.isNotEmpty()) {
                 interpolateKeyframes(op.opacityKeyframes, relativeTimeMs, op.opacity)
             } else {

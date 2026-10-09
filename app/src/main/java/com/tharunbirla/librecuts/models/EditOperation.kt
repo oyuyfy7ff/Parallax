@@ -101,6 +101,7 @@ sealed class EditOperation : Serializable {
         val textAlign: String = "center",
         val letterSpacing: Float = 0f,
         val lineSpacing: Float = 0f,
+        val parentId: String? = null,
         val positionKeyframes: List<KeyframePoint> = emptyList(),
         val opacityKeyframes: List<KeyframePoint> = emptyList()
     ) : EditOperation() {
@@ -349,8 +350,44 @@ sealed class EditOperation : Serializable {
         val positionKeyframes: List<KeyframePoint> = emptyList(),
         val opacityKeyframes: List<KeyframePoint> = emptyList(),
         val speedKeyframes: List<KeyframePoint> = emptyList(),
+        val parentId: String? = null,
         val maskConfig: MaskConfig = MaskConfig()
     ) : EditOperation()
+
+    /**
+     * Null layer: invisible control point. Layers with parentId == this id
+     * move by however far this null has moved from its rest position.
+     */
+    data class NullLayer(
+        val name: String = "Null",
+        val restX: Float = 0.5f,
+        val restY: Float = 0.5f,
+        val startTimeMs: Long? = null,
+        val endTimeMs: Long? = null,
+        val positionKeyframes: List<KeyframePoint> = emptyList(),
+        val id: String = System.nanoTime().toString()
+    ) : EditOperation() {
+        fun offsetAt(absMs: Long): Pair<Float, Float> {
+            if (positionKeyframes.isEmpty()) return Pair(0f, 0f)
+            val t = absMs - (startTimeMs ?: 0L)
+            val k = positionKeyframes.sortedBy { it.timeMs }
+            val x: Float
+            val y: Float
+            if (t <= k.first().timeMs) {
+                x = k.first().valueX; y = k.first().valueY
+            } else if (t >= k.last().timeMs) {
+                x = k.last().valueX; y = k.last().valueY
+            } else {
+                val i = k.indexOfLast { it.timeMs <= t }
+                val a = k[i]
+                val b = k[i + 1]
+                val p = (t - a.timeMs).toFloat() / (b.timeMs - a.timeMs)
+                x = a.valueX + p * (b.valueX - a.valueX)
+                y = a.valueY + p * (b.valueY - a.valueY)
+            }
+            return Pair(x - restX, y - restY)
+        }
+    }
 
     data class AddSubtitles(
         val subtitlesUri: Uri,
@@ -486,4 +523,12 @@ val EditOperation.id: String
         is EditOperation.AddSubtitles -> id
         is EditOperation.Adjust -> id
         is EditOperation.CanvasBackground -> id
+        is EditOperation.NullLayer -> id
     }
+
+
+fun List<EditOperation>.parentOffsetAt(parentId: String?, absMs: Long): Pair<Float, Float> {
+    if (parentId == null) return Pair(0f, 0f)
+    val n = this.firstOrNull { it is EditOperation.NullLayer && it.id == parentId } as? EditOperation.NullLayer
+    return n?.offsetAt(absMs) ?: Pair(0f, 0f)
+}

@@ -1,5 +1,7 @@
 package com.tharunbirla.librecuts.customviews
 
+import com.tharunbirla.librecuts.models.parentOffsetAt
+
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
@@ -225,11 +227,13 @@ class TextOverlayView @JvmOverloads constructor(
                 }
 
                 val relativeTimeMs = currentPositionMs - start
-                val interpolatedPos = if (op.positionKeyframes.isNotEmpty()) {
+                val interpolatedPosRaw = if (op.positionKeyframes.isNotEmpty()) {
                     interpolateKeyframePosition(op.positionKeyframes, relativeTimeMs, op.relativeX ?: 0.5f, op.relativeY ?: 0.5f)
                 } else {
                     Pair(op.relativeX, op.relativeY)
                 }
+                val parentOff = overlayOperations.parentOffsetAt(op.parentId, currentPositionMs)
+                val interpolatedPos = Pair(interpolatedPosRaw.first?.plus(parentOff.first), interpolatedPosRaw.second?.plus(parentOff.second))
                 val interpolatedOpacity = if (op.opacityKeyframes.isNotEmpty()) {
                     interpolateKeyframes(op.opacityKeyframes, relativeTimeMs, op.opacity)
                 } else {
