@@ -1478,6 +1478,9 @@ class VideoEditingActivity : AppCompatActivity() {
                 toolbar.findViewById<ImageButton>(R.id.btnVideoMask)?.setBounceClickListener {
                     showMaskBottomSheet()
                 }
+                toolbar.findViewById<ImageButton>(R.id.btnVideoKeyframe)?.setBounceClickListener {
+                    enterMainClipKeyframeMode()
+                }
                 toolbar.findViewById<ImageButton>(R.id.btnVideoAdjust)?.setBounceClickListener {
                     selectedVideoIndex?.let { index ->
                         showAdjustSelectionDialog(index)
@@ -8359,6 +8362,10 @@ class VideoEditingActivity : AppCompatActivity() {
 
     /** Done / Cancel in the keyframe toolbar. A Null has no other editor, so also deselect it. */
     private fun finishKeyframeEditing() {
+        if (isMainClipKeyframeMode()) {
+            exitMainClipKeyframeMode()
+            return
+        }
         val selectedId = viewModel.selectedOperationId.value
         val wasNull = viewModel.project.value?.operations?.any {
             it is EditOperation.NullLayer && it.id == selectedId
@@ -8462,7 +8469,209 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
+    // ---------- Main clip transform keyframes (Position / Scale / Rotation / Opacity) ----------
+    private var mainDragLastX = 0f
+    private var mainDragLastY = 0f
+
+    private fun isMainClipKeyframeMode(): Boolean =
+        isKeyframeEditingMode && viewModel.selectedOperationId.value == null && selectedVideoIndex != null
+
+    private fun mainClipContext(globalTimeMs: Long): Triple<Int, EditOperation.ClipTransform, Long>? {
+        val idx = selectedVideoIndex ?: return null
+        if (idx < 0) return null
+        val items = getSequenceItems()
+        val item = items.getOrNull(idx) ?: return null
+        val start = items.take(idx).sumOf { it.trimmedDurationMs }
+        return Triple(idx, item.transform ?: EditOperation.ClipTransform(), (globalTimeMs - start).coerceAtLeast(0L))
+    }
+
+    private fun upsertKey(list: List<EditOperation.KeyframePoint>, p: EditOperation.KeyframePoint): List<EditOperation.KeyframePoint> {
+        val m = list.toMutableList()
+        val i = m.indexOfFirst { Math.abs(it.timeMs - p.timeMs) < 150L }
+        if (i != -1) m[i] = p.copy(interpolationType = m[i].interpolationType) else m.add(p)
+        return m
+    }
+
+    private fun mainClipKeys(t: EditOperation.ClipTransform): List<EditOperation.KeyframePoint> = when (activeKeyframeProperty) {
+        "Clip Position" -> t.positionKeyframes
+        "Clip Scale" -> t.scaleKeyframes
+        "Clip Rotation" -> t.rotationKeyframes
+        "Clip Opacity" -> t.opacityKeyframes
+        else -> emptyList()
+    }
+
+    private fun withMainClipKeys(t: EditOperation.ClipTransform, keys: List<EditOperation.KeyframePoint>): EditOperation.ClipTransform = when (activeKeyframeProperty) {
+        "Clip Position" -> t.copy(positionKeyframes = keys)
+        "Clip Scale" -> t.copy(scaleKeyframes = keys)
+        "Clip Rotation" -> t.copy(rotationKeyframes = keys)
+        "Clip Opacity" -> t.copy(opacityKeyframes = keys)
+        else -> t
+    }
+
+    private fun commitMainClipTransform(idx: Int, nt: EditOperation.ClipTransform, relMs: Long) {
+        viewModel.updateClipTransform(idx, nt)
+        applyClipTransformPreview(nt, relMs)
+    }
+
+    private fun enterMainClipKeyframeMode() {
+        if (selectedVideoIndex == null) return
+        val toolbar = keyframeEditingToolbar ?: return
+        isKeyframeEditingMode = true
+        activeKeyframeProperty = "Clip Position"
+        videoEditingToolbar?.visibility = View.GONE
+        toolbar.visibility = View.VISIBLE
+        toolbar.findViewById<Button>(R.id.btnKeyframeProperty)?.text = activeKeyframeProperty
+        toolbar.findViewById<View>(R.id.layoutKeyframeSlider)?.visibility = View.GONE
+        setMainClipDragEnabled(true)
+        updateDraggableOverlayFromKeyframes(getGlobalPosition())
+    }
+
+    private fun exitMainClipKeyframeMode() {
+        isKeyframeEditingMode = false
+        keyframeEditingToolbar?.visibility = View.GONE
+        setMainClipDragEnabled(false)
+        videoEditingToolbar?.visibility = View.VISIBLE
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setMainClipDragEnabled(enabled: Boolean) {
+        if (!enabled) {
+            playerContainer.setOnTouchListener(null)
+            return
+        }
+        playerContainer.setOnTouchListener { _, ev ->
+            if (!isMainClipKeyframeMode() || activeKeyframeProperty != "Clip Position") return@setOnTouchListener false
+            val c = mainVideoMaskContainer
+            when (ev.actionMasked) {
+                android.view.MotionEvent.ACTION_DOWN -> {
+                    mainDragLastX = ev.rawX
+                    mainDragLastY = ev.rawY
+                    true
+                }
+                android.view.MotionEvent.ACTION_MOVE -> {
+                    if (c != null && c.width > 0 && c.height > 0) {
+                        val dx = (ev.rawX - mainDragLastX) / c.width
+                        val dy = (ev.rawY - mainDragLastY) / c.height
+                        mainDragLastX = ev.rawX
+                        mainDragLastY = ev.rawY
+                        moveMainClipBy(dx, dy)
+                    }
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
+    private fun moveMainClipBy(dx: Float, dy: Float) {
+        val g = getGlobalPosition()
+        val (idx, t, rel) = mainClipContext(g) ?: return
+        val cur = t.positionAt(rel)
+        val nx = (cur.first + dx).coerceIn(-1f, 1f)
+        val ny = (cur.second + dy).coerceIn(-1f, 1f)
+        val nt = t.copy(
+            offsetX = nx,
+            offsetY = ny,
+            positionKeyframes = upsertKey(t.positionKeyframes, EditOperation.KeyframePoint(rel, nx, ny))
+        )
+        commitMainClipTransform(idx, nt, rel)
+        updateKeyframeActionButtonState(g)
+    }
+
+    private fun showMainClipKeyframeMenu(view: View) {
+        val popup = androidx.appcompat.widget.PopupMenu(this, view)
+        popup.menu.add("Clip Position")
+        popup.menu.add("Clip Scale")
+        popup.menu.add("Clip Rotation")
+        popup.menu.add("Clip Opacity")
+        popup.setOnMenuItemClickListener { item ->
+            activeKeyframeProperty = item.title.toString()
+            val toolbar = keyframeEditingToolbar ?: return@setOnMenuItemClickListener true
+            toolbar.findViewById<Button>(R.id.btnKeyframeProperty)?.text = activeKeyframeProperty
+            val sliderLayout = toolbar.findViewById<View>(R.id.layoutKeyframeSlider)
+            val slider = toolbar.findViewById<com.google.android.material.slider.Slider>(R.id.sliderKeyframeValue)
+            if (activeKeyframeProperty == "Clip Position") {
+                sliderLayout?.visibility = View.GONE
+            } else {
+                sliderLayout?.visibility = View.VISIBLE
+                when (activeKeyframeProperty) {
+                    "Clip Scale" -> { slider?.valueFrom = 10f; slider?.valueTo = 300f; slider?.stepSize = 1f }
+                    "Clip Rotation" -> { slider?.valueFrom = -180f; slider?.valueTo = 180f; slider?.stepSize = 1f }
+                    "Clip Opacity" -> { slider?.valueFrom = 0f; slider?.valueTo = 100f; slider?.stepSize = 1f }
+                }
+            }
+            updateDraggableOverlayFromKeyframes(getGlobalPosition())
+            true
+        }
+        popup.show()
+    }
+
+    private fun handleMainClipKeyframeAction() {
+        val g = getGlobalPosition()
+        val (idx, t, rel) = mainClipContext(g) ?: return
+        val keys = mainClipKeys(t).toMutableList()
+        val ei = keys.indexOfFirst { Math.abs(it.timeMs - rel) < 150L }
+        if (ei != -1) {
+            keys.removeAt(ei)
+        } else {
+            keys.add(
+                when (activeKeyframeProperty) {
+                    "Clip Position" -> { val p = t.positionAt(rel); EditOperation.KeyframePoint(rel, p.first, p.second) }
+                    "Clip Scale" -> EditOperation.KeyframePoint(rel, t.scaleAt(rel))
+                    "Clip Rotation" -> EditOperation.KeyframePoint(rel, t.rotationAt(rel))
+                    else -> EditOperation.KeyframePoint(rel, t.opacityAt(rel))
+                }
+            )
+        }
+        commitMainClipTransform(idx, withMainClipKeys(t, keys), rel)
+        updateDraggableOverlayFromKeyframes(g)
+    }
+
+    private fun handleMainClipSliderChange(value: Float) {
+        val g = getGlobalPosition()
+        val (idx, t, rel) = mainClipContext(g) ?: return
+        val tv = keyframeEditingToolbar?.findViewById<TextView>(R.id.tvSliderValue)
+        val nt = when (activeKeyframeProperty) {
+            "Clip Scale" -> {
+                val v = value / 100f
+                tv?.text = "${value.toInt()}%"
+                t.copy(scale = v, scaleKeyframes = upsertKey(t.scaleKeyframes, EditOperation.KeyframePoint(rel, v)))
+            }
+            "Clip Rotation" -> {
+                tv?.text = "${value.toInt()}°"
+                t.copy(rotation = value, rotationKeyframes = upsertKey(t.rotationKeyframes, EditOperation.KeyframePoint(rel, value)))
+            }
+            "Clip Opacity" -> {
+                val v = value / 100f
+                tv?.text = "${value.toInt()}%"
+                t.copy(opacity = v, opacityKeyframes = upsertKey(t.opacityKeyframes, EditOperation.KeyframePoint(rel, v)))
+            }
+            else -> return
+        }
+        commitMainClipTransform(idx, nt, rel)
+        updateKeyframeActionButtonState(g)
+    }
+
+    private fun updateMainClipKeyframeUi(globalTimeMs: Long) {
+        val (_, t, rel) = mainClipContext(globalTimeMs) ?: return
+        val slider = keyframeEditingToolbar?.findViewById<com.google.android.material.slider.Slider>(R.id.sliderKeyframeValue)
+        val tv = keyframeEditingToolbar?.findViewById<TextView>(R.id.tvSliderValue)
+        val shown: Float? = when (activeKeyframeProperty) {
+            "Clip Scale" -> { val v = Math.round(t.scaleAt(rel) * 100f).toFloat(); tv?.text = "${v.toInt()}%"; v }
+            "Clip Rotation" -> { val v = Math.round(t.rotationAt(rel)).toFloat(); tv?.text = "${v.toInt()}°"; v }
+            "Clip Opacity" -> { val v = Math.round(t.opacityAt(rel) * 100f).toFloat(); tv?.text = "${v.toInt()}%"; v }
+            else -> null
+        }
+        if (shown != null && slider != null) slider.value = shown.coerceIn(slider.valueFrom, slider.valueTo)
+        applyClipTransformPreview(t, rel)
+        updateKeyframeActionButtonState(globalTimeMs)
+    }
+
     private fun showKeyframePropertyMenu(view: View) {
+        if (viewModel.selectedOperationId.value == null && selectedVideoIndex != null) {
+            showMainClipKeyframeMenu(view)
+            return
+        }
         val selectedId = viewModel.selectedOperationId.value ?: return
         val project = viewModel.project.value ?: return
         val op = project.operations.find { it.id == selectedId } ?: return
@@ -8544,6 +8753,10 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun handleKeyframeActionClick() {
+        if (viewModel.selectedOperationId.value == null && selectedVideoIndex != null) {
+            handleMainClipKeyframeAction()
+            return
+        }
         val selectedId = viewModel.selectedOperationId.value ?: return
         val project = viewModel.project.value ?: return
         val op = project.operations.find { it.id == selectedId } ?: return
@@ -8723,6 +8936,10 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun handleKeyframeSliderChange(value: Float) {
+        if (viewModel.selectedOperationId.value == null && selectedVideoIndex != null) {
+            handleMainClipSliderChange(value)
+            return
+        }
         val selectedId = viewModel.selectedOperationId.value
         val project = viewModel.project.value
         val globalTimeMs = getGlobalPosition()
@@ -8839,6 +9056,13 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun updateKeyframeActionButtonState(globalTimeMs: Long) {
+        if (isMainClipKeyframeMode()) {
+            val ctx = mainClipContext(globalTimeMs) ?: return
+            val has = mainClipKeys(ctx.second).any { Math.abs(it.timeMs - ctx.third) < 150L }
+            keyframeEditingToolbar?.findViewById<ImageButton>(R.id.btnKeyframeAction)
+                ?.setImageResource(if (has) R.drawable.ic_keyframe_remove else R.drawable.ic_keyframe_add)
+            return
+        }
         val selectedId = viewModel.selectedOperationId.value
         val project = viewModel.project.value
         var hasKeyframe = false
@@ -8977,6 +9201,10 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun updateDraggableOverlayFromKeyframes(globalTimeMs: Long) {
+        if (isMainClipKeyframeMode()) {
+            updateMainClipKeyframeUi(globalTimeMs)
+            return
+        }
         val selectedId = viewModel.selectedOperationId.value
         val project = viewModel.project.value
         val slider = keyframeEditingToolbar?.findViewById<com.google.android.material.slider.Slider>(R.id.sliderKeyframeValue)
