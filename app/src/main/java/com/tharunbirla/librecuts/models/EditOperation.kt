@@ -310,7 +310,7 @@ sealed class EditOperation : Serializable {
         val isMirrored: Boolean = false,
         val maskConfig: MaskConfig = MaskConfig(),
         val isImage: Boolean = false,
-        val transform: ClipTransform = ClipTransform()
+        val transform: ClipTransform? = null
     ) : Serializable {
         val trimmedDurationMs: Long
             get() = ((trimEndMs - trimStartMs) / speed).toLong()
