@@ -314,7 +314,8 @@ fun VideoEditingViewModel.deleteSequenceSegment(index: Int) {
                     val promotedItem = items.removeAt(0)
                     newSourceUri = promotedItem.uri
                     
-                    ops.removeAll { it is EditOperation.Trim || it is EditOperation.SpeedMain || it is EditOperation.ReverseMain || it is EditOperation.MirrorMain || it is EditOperation.MaskMain }
+                    ops.removeAll { it is EditOperation.Trim || it is EditOperation.SpeedMain || it is EditOperation.ReverseMain || it is EditOperation.MirrorMain || it is EditOperation.MaskMain || it is EditOperation.TransformMain }
+                    promotedItem.transform?.let { ops.add(EditOperation.TransformMain(it)) }
                     
                     ops.add(0, EditOperation.Trim(promotedItem.trimStartMs, promotedItem.trimEndMs))
                     if (promotedItem.speed != 1.0f) {
