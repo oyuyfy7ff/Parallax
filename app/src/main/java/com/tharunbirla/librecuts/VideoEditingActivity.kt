@@ -57,6 +57,7 @@ import com.google.android.material.slider.Slider
 import com.tharunbirla.librecuts.customviews.CustomVideoSeeker
 import com.tharunbirla.librecuts.customviews.DraggableTextOverlayView
 import com.tharunbirla.librecuts.customviews.DraggableImageOverlayView
+import com.tharunbirla.librecuts.customviews.NullHandleView
 import com.tharunbirla.librecuts.customviews.ImageOverlayView
 import com.tharunbirla.librecuts.models.EditOperation
 import com.tharunbirla.librecuts.models.VideoProject
@@ -430,6 +431,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
     // Inline image overlay editing state
     private var draggableImageOverlay: DraggableImageOverlayView? = null
+    private var nullHandleView: NullHandleView? = null
     private var imageOverlayView: ImageOverlayView? = null
     private var imageEditingToolbar: View? = null
     private var isImageEditingActive = false
@@ -1826,10 +1828,10 @@ class VideoEditingActivity : AppCompatActivity() {
         keyframeEditingToolbar = try {
             findViewById<View>(R.id.keyframeEditingToolbar)?.also { toolbar ->
                 toolbar.findViewById<ImageButton>(R.id.btnKeyframeCancel)?.setBounceClickListener {
-                    exitKeyframeEditingMode()
+                    finishKeyframeEditing()
                 }
                 toolbar.findViewById<ImageButton>(R.id.btnKeyframeDone)?.setBounceClickListener {
-                    exitKeyframeEditingMode()
+                    finishKeyframeEditing()
                 }
                 toolbar.findViewById<Button>(R.id.btnKeyframeProperty)?.setBounceClickListener {
                     val btn = toolbar.findViewById<Button>(R.id.btnKeyframeProperty)
@@ -1849,6 +1851,13 @@ class VideoEditingActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "Keyframe editing toolbar not found: ${e.message}")
             null
+        }
+
+        nullHandleView = findViewById<NullHandleView>(R.id.nullHandleView)?.also { handle ->
+            handle.onCommit = { x, y -> commitNullHandle(x, y) }
+        }
+        findViewById<ImageButton>(R.id.btnNull)?.setBounceClickListener {
+            nullAction()
         }
 
         findViewById<ImageButton>(R.id.btnHome)?.setBounceClickListener {
@@ -2052,10 +2061,14 @@ class VideoEditingActivity : AppCompatActivity() {
                             is EditOperation.AddText -> it.id == selectedId
                             is EditOperation.AddImageOverlay -> it.id == selectedId
                             is EditOperation.AddBackgroundAudio -> it.id == selectedId
+                            is EditOperation.NullLayer -> it.id == selectedId
                             else -> false
                         }
                     }
                     when (op) {
+                        is EditOperation.NullLayer -> {
+                            enterKeyframeEditingMode(false)
+                        }
                         is EditOperation.AddText -> {
                             draggableTextOverlay?.activateForEdit(op)
                             enterTextEditingMode(isReEditing = true)
@@ -2070,6 +2083,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         else -> {}
                     }
                 } else {
+                    if (isKeyframeEditingMode) exitKeyframeEditingMode()
                     draggableTextOverlay?.deactivate()
                     draggableImageOverlay?.deactivate()
                     exitTextEditingMode()
@@ -2107,12 +2121,16 @@ class VideoEditingActivity : AppCompatActivity() {
                     updateUIInteractionState()
 
                     textOverlayView?.let { overlay ->
-                        val overlayOps = project.operations.filter { it is EditOperation.AddText }
+                        // NullLayer must be included so parentOffsetAt() can resolve parents in preview
+                        val overlayOps = project.operations.filter {
+                            it is EditOperation.AddText || it is EditOperation.NullLayer
+                        }
                         overlay.setOverlayOperations(overlayOps)
                     }
 
                     imageOverlayView?.let { overlay ->
                         val overlayOps = project.operations.filterIsInstance<EditOperation.AddImageOverlay>()
+                        overlay.allOperations = project.operations
                         overlay.setImageOperations(overlayOps)
                     }
 
@@ -2301,6 +2319,7 @@ class VideoEditingActivity : AppCompatActivity() {
             draggableTextOverlay?.setVideoSize(canvasW.toInt(), canvasH.toInt())
             imageOverlayView?.setVideoSize(canvasW.toInt(), canvasH.toInt())
             draggableImageOverlay?.setVideoSize(canvasW.toInt(), canvasH.toInt())
+            nullHandleView?.setVideoSize(canvasW.toInt(), canvasH.toInt())
             cropOverlayView?.setVideoSize(canvasW.toInt(), canvasH.toInt())
         }
     }
@@ -2357,6 +2376,7 @@ class VideoEditingActivity : AppCompatActivity() {
             draggableTextOverlay?.setVideoSize(finalWidth, finalHeight)
             imageOverlayView?.setVideoSize(finalWidth, finalHeight)
             draggableImageOverlay?.setVideoSize(finalWidth, finalHeight)
+            nullHandleView?.setVideoSize(finalWidth, finalHeight)
             cropOverlayView?.setVideoSize(finalWidth, finalHeight)
         }
     }
@@ -6445,7 +6465,7 @@ class VideoEditingActivity : AppCompatActivity() {
         imageTrackContainer.removeAllViews()
         imageTrackContainer.visibility = View.GONE
 
-        val overlayOps = project.operations.filter { it is EditOperation.AddText || it is EditOperation.AddImageOverlay }
+        val overlayOps = project.operations.filter { it is EditOperation.AddText || it is EditOperation.AddImageOverlay || it is EditOperation.NullLayer }
         if (overlayOps.isNotEmpty()) {
             textTrackContainer.visibility = View.VISIBLE
             // Reverse so that the top-most overlay is visually at the top of the timeline track stack
@@ -6453,6 +6473,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 val opId = when (op) {
                     is EditOperation.AddText -> op.id
                     is EditOperation.AddImageOverlay -> op.id
+                    is EditOperation.NullLayer -> op.id
                     else -> ""
                 }
                 val trackView = com.tharunbirla.librecuts.customviews.TrackTrimView(this).apply {
@@ -6538,6 +6559,28 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                         activeRenderJobs.add(imageJob)
                         keyframes = (op.positionKeyframes.map { it.timeMs } + op.opacityKeyframes.map { it.timeMs } + op.speedKeyframes.map { it.timeMs }).distinct()
+                    }
+                } else if (op is EditOperation.NullLayer) {
+                    trackView.apply {
+                        trackColor = android.graphics.Color.parseColor("#7C4DFF") // Purple for Null
+                        trackLabel = op.name
+                        trackIcon = androidx.core.content.ContextCompat.getDrawable(this@VideoEditingActivity, R.drawable.ic_null_24)
+                        activeStartMs = op.startTimeMs ?: 0L
+                        activeEndMs = op.endTimeMs ?: totalSequenceDuration
+                        setRange(totalSequenceDuration, op.startTimeMs ?: 0L, op.endTimeMs ?: totalSequenceDuration)
+                        onTrimChanged = { start, end, _ ->
+                            viewModel.updateOperation(op.copy(startTimeMs = start, endTimeMs = end))
+                        }
+                        onTrimAdjustingWithDelta = { start, end, deltaStart, deltaEnd ->
+                            if (deltaStart != 0L) {
+                                seekToGlobalPosition(start)
+                            } else if (deltaEnd != 0L) {
+                                seekToGlobalPosition(end)
+                            } else {
+                                seekToGlobalPosition(start)
+                            }
+                        }
+                        keyframes = op.positionKeyframes.map { it.timeMs }.distinct()
                     }
                 }
                 textTrackContainer.addView(trackView)
@@ -6647,6 +6690,12 @@ class VideoEditingActivity : AppCompatActivity() {
                 endTimeMs = op.endTimeMs ?: totalSequenceDuration
             }
             
+            if (op is com.tharunbirla.librecuts.models.EditOperation.NullLayer) {
+                keyframes.addAll(op.positionKeyframes.map { it.timeMs })
+                startTimeMs = op.startTimeMs ?: 0L
+                endTimeMs = op.endTimeMs ?: totalSequenceDuration
+            }
+
             val distinctKeyframes = keyframes.distinct()
             if (distinctKeyframes.isNotEmpty()) {
                 hasKeyframeTracks = true
@@ -8246,6 +8295,98 @@ class VideoEditingActivity : AppCompatActivity() {
         findViewById<android.widget.HorizontalScrollView>(R.id.editingControlsScroll)?.visibility = View.VISIBLE
     }
 
+    /** Creates a Null layer and opens it for keyframing. */
+    private fun nullAction() {
+        if (isShowingPreview) dismissPreview()
+        val project = viewModel.project.value ?: return
+        val n = project.operations.count { it is EditOperation.NullLayer } + 1
+        val nullLayer = EditOperation.NullLayer(name = "Null $n")
+        viewModel.addOperation(nullLayer)
+        viewModel.selectOperation(nullLayer.id)
+    }
+
+    /** Current absolute (0..1) position of a Null at [absMs]: rest position plus its animated offset. */
+    private fun nullPositionAt(op: EditOperation.NullLayer, absMs: Long): Pair<Float, Float> {
+        val off = op.offsetAt(absMs)
+        return Pair(op.restX + off.first, op.restY + off.second)
+    }
+
+    /** Called when the user lifts their finger after dragging the Null handle. */
+    private fun commitNullHandle(x: Float, y: Float) {
+        val selectedId = viewModel.selectedOperationId.value ?: return
+        val op = viewModel.project.value?.operations?.find { it.id == selectedId } as? EditOperation.NullLayer ?: return
+        if (op.positionKeyframes.isEmpty()) {
+            // No animation yet: dragging just places the Null.
+            viewModel.updateOperation(op.copy(restX = x, restY = y))
+        } else {
+            // Auto-keyframe at the playhead.
+            val rel = (getGlobalPosition() - (op.startTimeMs ?: 0L)).coerceAtLeast(0L)
+            val list = op.positionKeyframes.toMutableList()
+            val idx = list.indexOfFirst { Math.abs(it.timeMs - rel) < 150L }
+            if (idx != -1) {
+                list[idx] = list[idx].copy(valueX = x, valueY = y)
+            } else {
+                list.add(EditOperation.KeyframePoint(rel, x, y))
+            }
+            viewModel.updateOperation(op.copy(positionKeyframes = list.sortedBy { it.timeMs }))
+        }
+        updateDraggableOverlayFromKeyframes(getGlobalPosition())
+    }
+
+    /** Done / Cancel in the keyframe toolbar. A Null has no other editor, so also deselect it. */
+    private fun finishKeyframeEditing() {
+        val selectedId = viewModel.selectedOperationId.value
+        val wasNull = viewModel.project.value?.operations?.any {
+            it is EditOperation.NullLayer && it.id == selectedId
+        } == true
+        exitKeyframeEditingMode()
+        if (wasNull) viewModel.selectOperation(null)
+    }
+
+    private fun showParentPickerDialog(opId: String) {
+        val project = viewModel.project.value ?: return
+        val op = project.operations.find { it.id == opId } ?: return
+        val nulls = project.operations.filterIsInstance<EditOperation.NullLayer>()
+        if (nulls.isEmpty()) {
+            android.widget.Toast.makeText(this, "No Null layers yet. Tap Null in the toolbar to add one.", android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
+        val currentParent = when (op) {
+            is EditOperation.AddText -> op.parentId
+            is EditOperation.AddImageOverlay -> op.parentId
+            else -> null
+        }
+        val names = arrayOf("None") + nulls.map { it.name }.toTypedArray()
+        val checked = nulls.indexOfFirst { it.id == currentParent }.let { if (it == -1) 0 else it + 1 }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Parent")
+            .setSingleChoiceItems(names, checked) { dialog, which ->
+                val newParent = if (which == 0) null else nulls[which - 1].id
+                when (op) {
+                    is EditOperation.AddText -> viewModel.updateOperation(op.copy(parentId = newParent))
+                    is EditOperation.AddImageOverlay -> viewModel.updateOperation(op.copy(parentId = newParent))
+                    else -> {}
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun deleteNullLayer(nullId: String) {
+        exitKeyframeEditingMode()
+        viewModel.selectOperation(null)
+        viewModel.executeCommand(com.tharunbirla.librecuts.commands.MutateListCommand("Delete Null") { ops ->
+            ops.filterNot { it is EditOperation.NullLayer && it.id == nullId }.map {
+                when (it) {
+                    is EditOperation.AddText -> if (it.parentId == nullId) it.copy(parentId = null) else it
+                    is EditOperation.AddImageOverlay -> if (it.parentId == nullId) it.copy(parentId = null) else it
+                    else -> it
+                }
+            }
+        })
+    }
+
     private fun enterKeyframeEditingMode(isText: Boolean) {
         val selectedId = viewModel.selectedOperationId.value ?: return
         val project = viewModel.project.value ?: return
@@ -8269,6 +8410,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val startTime = when (op) {
             is EditOperation.AddImageOverlay -> op.startTimeMs ?: 0L
             is EditOperation.AddText -> op.startTimeMs ?: 0L
+            is EditOperation.NullLayer -> op.startTimeMs ?: 0L
             else -> 0L
         }
         seekToGlobalPosition(startTime, force = true)
@@ -8279,6 +8421,7 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun exitKeyframeEditingMode() {
         isKeyframeEditingMode = false
         keyframeEditingToolbar?.visibility = View.GONE
+        nullHandleView?.visibility = View.GONE
         
         // Restore corresponding editing toolbar
         val selectedId = viewModel.selectedOperationId.value
@@ -8302,7 +8445,7 @@ class VideoEditingActivity : AppCompatActivity() {
         
         val popup = androidx.appcompat.widget.PopupMenu(this, view)
         popup.menu.add("Position")
-        popup.menu.add("Opacity")
+        if (op !is EditOperation.NullLayer) popup.menu.add("Opacity")
         if (op is EditOperation.AddImageOverlay) {
             val isVideo = op.fileDurationMs != null && op.fileDurationMs > 0
             if (isVideo) {
@@ -8316,7 +8459,20 @@ class VideoEditingActivity : AppCompatActivity() {
             }
         }
         
+        if (op is EditOperation.AddText || op is EditOperation.AddImageOverlay) popup.menu.add("Parent (Null)")
+        if (op is EditOperation.NullLayer) popup.menu.add("Delete Null")
+
         popup.setOnMenuItemClickListener { item ->
+            when (item.title.toString()) {
+                "Parent (Null)" -> {
+                    showParentPickerDialog(op.id)
+                    return@setOnMenuItemClickListener true
+                }
+                "Delete Null" -> {
+                    deleteNullLayer(op.id)
+                    return@setOnMenuItemClickListener true
+                }
+            }
             activeKeyframeProperty = item.title.toString()
             val toolbar = keyframeEditingToolbar ?: return@setOnMenuItemClickListener true
             toolbar.findViewById<Button>(R.id.btnKeyframeProperty)?.text = activeKeyframeProperty
@@ -8373,6 +8529,7 @@ class VideoEditingActivity : AppCompatActivity() {
             val start = when (op) {
                 is EditOperation.AddImageOverlay -> op.startTimeMs ?: 0L
                 is EditOperation.AddText -> op.startTimeMs ?: 0L
+                is EditOperation.NullLayer -> op.startTimeMs ?: 0L
                 else -> 0L
             }
             val relativeTimeMs = globalTimeMs - start
@@ -8444,6 +8601,19 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                             viewModel.updateOperation(op.copy(maskConfig = mc.copy(featherKeyframes = currentList)))
                         }
+                    }
+                }
+                is EditOperation.NullLayer -> {
+                    if (activeKeyframeProperty == "Position") {
+                        val currentList = op.positionKeyframes.toMutableList()
+                        val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                        if (existingIndex != -1) {
+                            currentList.removeAt(existingIndex)
+                        } else {
+                            val pos = nullPositionAt(op, globalTimeMs)
+                            currentList.add(EditOperation.KeyframePoint(relativeTimeMs.coerceAtLeast(0L), pos.first, pos.second))
+                        }
+                        viewModel.updateOperation(op.copy(positionKeyframes = currentList.sortedBy { it.timeMs }))
                     }
                 }
                 is EditOperation.AddText -> {
@@ -8655,6 +8825,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 val start = when (op) {
                     is EditOperation.AddImageOverlay -> op.startTimeMs ?: 0L
                     is EditOperation.AddText -> op.startTimeMs ?: 0L
+                    is EditOperation.NullLayer -> op.startTimeMs ?: 0L
                     else -> 0L
                 }
                 val relativeTimeMs = globalTimeMs - start
@@ -8677,6 +8848,10 @@ class VideoEditingActivity : AppCompatActivity() {
                             "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             else -> false
                         }
+                    }
+                    is EditOperation.NullLayer -> {
+                        activeKeyframeProperty == "Position" &&
+                            op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                     }
                     else -> false
                 }
@@ -8734,6 +8909,10 @@ class VideoEditingActivity : AppCompatActivity() {
                     else -> null
                 }
             }
+            is EditOperation.NullLayer -> {
+                rel = globalTimeMs - (op.startTimeMs ?: 0L)
+                list = if (activeKeyframeProperty == "Position") op.positionKeyframes else null
+            }
             else -> {}
         }
         val kf = list?.firstOrNull { Math.abs(it.timeMs - rel) < 150L }
@@ -8765,6 +8944,9 @@ class VideoEditingActivity : AppCompatActivity() {
                 "Position" -> viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
                 "Opacity" -> viewModel.updateOperation(op.copy(opacityKeyframes = retag(op.opacityKeyframes)))
                 else -> {}
+            }
+            is EditOperation.NullLayer -> if (prop == "Position") {
+                viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
             }
             else -> {}
         }
@@ -8840,6 +9022,11 @@ class VideoEditingActivity : AppCompatActivity() {
                         slider?.value = roundedFeather
                         tvSliderValue?.text = "${roundedFeather.toInt()}%"
                     }
+                }
+                is EditOperation.NullLayer -> {
+                    val pos = nullPositionAt(op, globalTimeMs)
+                    nullHandleView?.setPosition(pos.first, pos.second)
+                    nullHandleView?.visibility = View.VISIBLE
                 }
                 is EditOperation.AddText -> {
                     val start = op.startTimeMs ?: 0L
