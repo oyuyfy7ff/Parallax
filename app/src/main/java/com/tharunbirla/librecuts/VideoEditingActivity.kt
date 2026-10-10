@@ -2324,6 +2324,27 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
+    private fun applyClipTransformPreview(t: com.tharunbirla.librecuts.models.EditOperation.ClipTransform?, relMs: Long) {
+        val c = mainVideoMaskContainer ?: return
+        if (t == null || t.isIdentity) {
+            c.translationX = 0f
+            c.translationY = 0f
+            c.scaleX = 1f
+            c.scaleY = 1f
+            c.rotation = 0f
+            c.alpha = 1f
+            return
+        }
+        val pos = t.positionAt(relMs)
+        c.translationX = pos.first * c.width
+        c.translationY = pos.second * c.height
+        val sc = t.scaleAt(relMs)
+        c.scaleX = sc
+        c.scaleY = sc
+        c.rotation = t.rotationAt(relMs)
+        c.alpha = t.opacityAt(relMs).coerceIn(0f, 1f)
+    }
+
     private fun resetCropPreview() {
         val canvasContainer = findViewById<FrameLayout>(R.id.canvasContainer) ?: return
         val activeParent = (canvasContainer.parent as? View) ?: playerContainer
@@ -5594,6 +5615,7 @@ class VideoEditingActivity : AppCompatActivity() {
             if (activeClipIndex >= 0 && activeClipIndex < sequenceItems.size) {
                 val relTimeMs = currentGlobalPos - accumulatedStartMs
                 val evaluatedMask = sequenceItems[activeClipIndex].maskConfig.evaluatedAt(relTimeMs)
+                applyClipTransformPreview(sequenceItems[activeClipIndex].transform, relTimeMs)
                 mainVideoMaskContainer?.maskConfig = evaluatedMask
 
                 val activeItem = sequenceItems[activeClipIndex]
