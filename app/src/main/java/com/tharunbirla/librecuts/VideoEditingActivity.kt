@@ -5375,6 +5375,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val maskMainOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.MaskMain>()?.lastOrNull()
         val maskConfig = maskMainOp?.maskConfig ?: com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
 
+        val transformMain = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.TransformMain>()?.lastOrNull()?.transform
         val isMainImg = isImageUri(sourceUri) || (::tempInputFile.isInitialized && isImageUri(Uri.fromFile(tempInputFile)))
         items.add(com.tharunbirla.librecuts.models.EditOperation.MergeItem(
             uri = sourceUri,
@@ -5387,7 +5388,8 @@ class VideoEditingActivity : AppCompatActivity() {
             proxyUri = proxyUri,
             scrubProxyUri = viewModel.project.value?.scrubProxyUri,
             maskConfig = maskConfig,
-            isImage = isMainImg
+            isImage = isMainImg,
+            transform = transformMain
         ))
         
         val mergeOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Merge>()?.firstOrNull()
