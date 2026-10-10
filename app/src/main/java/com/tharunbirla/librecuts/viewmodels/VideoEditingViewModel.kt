@@ -454,7 +454,7 @@ class VideoEditingViewModel : ViewModel() {
         for (op in overlayOps) {
             when (op) {
                 is EditOperation.AddText -> {
-                    val filterExpr = buildDrawtextExpr(op, fontFilePath)
+                    val filterExpr = buildDrawtextExpr(op, fontFilePath, operations)
                     val nextLabel = "[v$stageIndex]"
                     stages.add("$currentLabel$filterExpr$nextLabel")
                     currentLabel = nextLabel
@@ -638,6 +638,33 @@ class VideoEditingViewModel : ViewModel() {
             }
         }
 
+        // Camera (pan + zoom) moves/zooms the whole composite (clip + overlays), before crop, like the preview.
+        // Camera maps p -> center + zoom * (p - center - pan * frameSize).
+        val camera = operations.filterIsInstance<EditOperation.CameraLayer>().firstOrNull()
+        if (camera != null && !camera.isIdentity) {
+            val zExpr = if (camera.zoomKeyframes.isNotEmpty())
+                buildFFmpegInterpolationExpr(camera.zoomKeyframes, useValueY = false, defaultValue = camera.zoom, startTimeMs = 0L)
+            else camera.zoom.toString()
+            val pxExpr = if (camera.positionKeyframes.isNotEmpty())
+                buildFFmpegInterpolationExpr(camera.positionKeyframes, useValueY = false, defaultValue = camera.panX, startTimeMs = 0L)
+            else camera.panX.toString()
+            val pyExpr = if (camera.positionKeyframes.isNotEmpty())
+                buildFFmpegInterpolationExpr(camera.positionKeyframes, useValueY = true, defaultValue = camera.panY, startTimeMs = 0L)
+            else camera.panY.toString()
+            val safeZ = "max(0.1\\, ($zExpr))"
+            val labelA = "[cam_a_$stageIndex]"
+            val labelB = "[cam_b_$stageIndex]"
+            val labelScaled = "[cam_s_$stageIndex]"
+            val labelBase = "[cam_base_$stageIndex]"
+            val nextLabel = "[v$stageIndex]"
+            stages.add("${currentLabel}split=2$labelA$labelB")
+            stages.add("${labelB}scale=w='trunc(iw*($safeZ)/2)*2':h='trunc(ih*($safeZ)/2)*2':eval=frame$labelScaled")
+            stages.add("${labelA}drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill$labelBase")
+            stages.add("${labelBase}${labelScaled}overlay=x='(W-w)/2-($safeZ)*($pxExpr)*W':y='(H-h)/2-($safeZ)*($pyExpr)*H':eval=frame:shortest=1$nextLabel")
+            currentLabel = nextLabel
+            stageIndex++
+        }
+
         // Process crop at the end so it crops the video and all overlays together, matching the preview.
         for (op in cropOps) {
             val filterExpr = buildCropFilterExpr(op)
@@ -735,7 +762,7 @@ class VideoEditingViewModel : ViewModel() {
         val trimOp = operations.filterIsInstance<EditOperation.Trim>().lastOrNull()
         val audioOps = operations.filterIsInstance<EditOperation.AddBackgroundAudio>()
         val audioMuted = operations.any { it is EditOperation.MuteAudio }
-        val videoOps = nonMergeOps.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddImageOverlay || it is EditOperation.AddSubtitles }
+        val videoOps = nonMergeOps.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddImageOverlay || it is EditOperation.AddSubtitles || it is EditOperation.NullLayer || it is EditOperation.CameraLayer }
         val imageOps = operations.filterIsInstance<EditOperation.AddImageOverlay>()
 
         // ── Unified Input Indexing ────────────────────────────────────────────
@@ -1623,7 +1650,7 @@ class VideoEditingViewModel : ViewModel() {
             return null // No visual operations to preview
         }
 
-        val videoOps = operations.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddSubtitles }
+        val videoOps = operations.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddSubtitles || it is EditOperation.NullLayer || it is EditOperation.CameraLayer }
         val trimOp = operations.filterIsInstance<EditOperation.Trim>().lastOrNull()
 
         val cmd = StringBuilder()

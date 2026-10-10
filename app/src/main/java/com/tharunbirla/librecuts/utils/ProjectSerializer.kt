@@ -49,7 +49,7 @@ object ProjectSerializer {
             var opTypeStr = jsonObject.get("operationType")?.asString
             if (opTypeStr == null) {
                 val typeVal = jsonObject.get("type")?.asString
-                val validClasses = setOf("Trim", "SpeedMain", "ReverseMain", "MirrorMain", "Crop", "AddText", "Merge", "MaskMain", "TransformMain", "MuteAudio", "Transition", "MuteClip", "ColorFilter", "AddBackgroundAudio", "AddImageOverlay", "AddSubtitles", "Adjust", "CanvasBackground", "NullLayer")
+                val validClasses = setOf("Trim", "SpeedMain", "ReverseMain", "MirrorMain", "Crop", "AddText", "Merge", "MaskMain", "TransformMain", "MuteAudio", "Transition", "MuteClip", "ColorFilter", "AddBackgroundAudio", "AddImageOverlay", "AddSubtitles", "Adjust", "CanvasBackground", "NullLayer", "CameraLayer")
                 
                 if (typeVal != null && validClasses.contains(typeVal)) {
                     opTypeStr = typeVal
@@ -102,6 +102,7 @@ object ProjectSerializer {
                 "Adjust" -> EditOperation.Adjust::class.java
                 "CanvasBackground" -> EditOperation.CanvasBackground::class.java
                 "NullLayer" -> EditOperation.NullLayer::class.java
+                "CameraLayer" -> EditOperation.CameraLayer::class.java
                 else -> null
             }
 

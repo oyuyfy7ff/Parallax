@@ -1862,6 +1862,9 @@ class VideoEditingActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnNull)?.setBounceClickListener {
             nullAction()
         }
+        findViewById<ImageButton>(R.id.btnCamera)?.setBounceClickListener {
+            cameraAction()
+        }
 
         findViewById<ImageButton>(R.id.btnHome)?.setBounceClickListener {
             onBackPressedDispatcher.onBackPressed()
@@ -2327,9 +2330,40 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
+    /** While a camera slider is being dragged, the preview uses this uncommitted value. */
+    private var cameraPreviewOverride: com.tharunbirla.librecuts.models.EditOperation.CameraLayer? = null
+
+    private fun currentCameraLayer(): com.tharunbirla.librecuts.models.EditOperation.CameraLayer? =
+        cameraPreviewOverride ?: viewModel.project.value?.operations
+            ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.CameraLayer>()?.firstOrNull()
+
+    /**
+     * Camera preview for overlays (text/images). The main clip gets the camera folded into
+     * applyClipTransformPreview so clip transform + camera stay one combined view transform.
+     * Camera maps a point p to: center + zoom * (p - center - pan * frameSize).
+     */
+    private fun applyCameraPreview(globalMs: Long) {
+        val cam = currentCameraLayer()
+        val canvas = findViewById<FrameLayout>(R.id.canvasContainer)
+        val cw = canvas?.width?.toFloat() ?: 0f
+        val ch = canvas?.height?.toFloat() ?: 0f
+        val z = cam?.zoomAt(globalMs) ?: 1f
+        val pan = cam?.panAt(globalMs) ?: Pair(0f, 0f)
+        val tx = -z * pan.first * cw
+        val ty = -z * pan.second * ch
+        for (v in listOf<View?>(textOverlayView, imageOverlayView)) {
+            v ?: continue
+            v.scaleX = z
+            v.scaleY = z
+            v.translationX = tx
+            v.translationY = ty
+        }
+    }
+
     private fun applyClipTransformPreview(t: com.tharunbirla.librecuts.models.EditOperation.ClipTransform?, relMs: Long) {
         val c = mainVideoMaskContainer ?: return
-        if (t == null || t.isIdentity) {
+        val cam = currentCameraLayer()
+        if ((t == null || t.isIdentity) && cam == null) {
             c.translationX = 0f
             c.translationY = 0f
             c.scaleX = 1f
@@ -2338,14 +2372,18 @@ class VideoEditingActivity : AppCompatActivity() {
             c.alpha = 1f
             return
         }
-        val pos = t.positionAt(relMs)
-        c.translationX = pos.first * c.width
-        c.translationY = pos.second * c.height
-        val sc = t.scaleAt(relMs)
-        c.scaleX = sc
-        c.scaleY = sc
-        c.rotation = t.rotationAt(relMs)
-        c.alpha = t.opacityAt(relMs).coerceIn(0f, 1f)
+        val gms = getGlobalPosition()
+        val z = cam?.zoomAt(gms) ?: 1f
+        val pan = cam?.panAt(gms) ?: Pair(0f, 0f)
+        val pos = t?.positionAt(relMs) ?: Pair(0f, 0f)
+        val sc = t?.scaleAt(relMs) ?: 1f
+        // Combined = camera(clipTransform(p)): scale z*sc, translation z*(T - pan*size)
+        c.translationX = z * (pos.first - pan.first) * c.width
+        c.translationY = z * (pos.second - pan.second) * c.height
+        c.scaleX = z * sc
+        c.scaleY = z * sc
+        c.rotation = t?.rotationAt(relMs) ?: 0f
+        c.alpha = (t?.opacityAt(relMs) ?: 1f).coerceIn(0f, 1f)
     }
 
     private fun resetCropPreview() {
@@ -5591,6 +5629,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
             textOverlayView?.currentPositionMs = currentGlobalPos
             imageOverlayView?.currentPositionMs = currentGlobalPos
+            applyCameraPreview(currentGlobalPos)
 
             if (isKeyframeEditingMode) {
                 updateDraggableOverlayFromKeyframes(currentGlobalPos)
@@ -8320,6 +8359,175 @@ class VideoEditingActivity : AppCompatActivity() {
         }
         
         findViewById<android.widget.HorizontalScrollView>(R.id.editingControlsScroll)?.visibility = View.VISIBLE
+    }
+
+    /** Opens the camera (pan + zoom) panel, creating the project's single Camera on first use. */
+    private fun cameraAction() {
+        if (isShowingPreview) dismissPreview()
+        val cam = currentCameraLayer() ?: EditOperation.CameraLayer().also { viewModel.addOperation(it) }
+        showCameraSheet(cam)
+    }
+
+    private fun showCameraSheet(initial: EditOperation.CameraLayer) {
+        var cam = initial
+        val dp = resources.displayMetrics.density
+        fun px(v: Int) = (v * dp).toInt()
+        val ease = "ease_in_out"
+
+        val sheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
+        val root = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(px(20), px(16), px(20), px(20))
+        }
+        val title = android.widget.TextView(this).apply {
+            text = "Camera"
+            textSize = 18f
+        }
+        val timeLabel = android.widget.TextView(this).apply { textSize = 13f }
+        val hint = android.widget.TextView(this).apply { textSize = 12f }
+        root.addView(title)
+        root.addView(timeLabel)
+        root.addView(hint)
+
+        val syncers = mutableListOf<() -> Unit>()
+        fun refreshLabels() {
+            timeLabel.text = String.format("Playhead: %.1fs", getGlobalPosition() / 1000f)
+            hint.text = if (cam.positionKeyframes.isEmpty() && cam.zoomKeyframes.isEmpty()) {
+                "Static camera. Tap Add keyframe, move the playhead, then change the sliders to animate."
+            } else {
+                "Animated: slider changes are saved as keyframes at the playhead."
+            }
+        }
+
+        fun addSlider(
+            name: String,
+            max: Int,
+            toProgress: (EditOperation.CameraLayer, Long) -> Int,
+            label: (Int) -> String,
+            updateCam: (EditOperation.CameraLayer, Int, Long) -> EditOperation.CameraLayer
+        ) {
+            val valueView = android.widget.TextView(this).apply { setPadding(0, px(12), 0, 0) }
+            val bar = android.widget.SeekBar(this).apply { this.max = max }
+            fun sync() {
+                val p = toProgress(cam, getGlobalPosition()).coerceIn(0, max)
+                bar.progress = p
+                valueView.text = "$name   ${label(p)}"
+            }
+            bar.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: android.widget.SeekBar?, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    cameraPreviewOverride = updateCam(cam, progress, getGlobalPosition())
+                    valueView.text = "$name   ${label(progress)}"
+                    syncUiWithPlayer()
+                }
+                override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) {}
+                override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) {
+                    cameraPreviewOverride?.let {
+                        cam = it
+                        viewModel.updateOperation(it)
+                    }
+                    cameraPreviewOverride = null
+                    syncUiWithPlayer()
+                    refreshLabels()
+                }
+            })
+            root.addView(valueView)
+            root.addView(bar)
+            syncers.add { sync() }
+            sync()
+        }
+
+        addSlider("Zoom", 300,
+            { c, t -> Math.round((c.zoomAt(t) - 0.5f) * 100f) },
+            { p -> String.format("%.2fx", 0.5f + p / 100f) }
+        ) { c, p, t ->
+            val v = 0.5f + p / 100f
+            if (c.zoomKeyframes.isEmpty()) c.copy(zoom = v)
+            else c.copy(zoomKeyframes = upsertKey(c.zoomKeyframes, EditOperation.KeyframePoint(t, v, 0f, ease)))
+        }
+        addSlider("Pan X", 200,
+            { c, t -> Math.round((c.panAt(t).first + 1f) * 100f) },
+            { p -> String.format("%+.2f", p / 100f - 1f) }
+        ) { c, p, t ->
+            val v = p / 100f - 1f
+            if (c.positionKeyframes.isEmpty()) c.copy(panX = v)
+            else c.copy(positionKeyframes = upsertKey(c.positionKeyframes, EditOperation.KeyframePoint(t, v, c.panAt(t).second, ease)))
+        }
+        addSlider("Pan Y", 200,
+            { c, t -> Math.round((c.panAt(t).second + 1f) * 100f) },
+            { p -> String.format("%+.2f", p / 100f - 1f) }
+        ) { c, p, t ->
+            val v = p / 100f - 1f
+            if (c.positionKeyframes.isEmpty()) c.copy(panY = v)
+            else c.copy(positionKeyframes = upsertKey(c.positionKeyframes, EditOperation.KeyframePoint(t, c.panAt(t).first, v, ease)))
+        }
+
+        fun button(text: String, onClick: () -> Unit) = android.widget.Button(this).apply {
+            this.text = text
+            isAllCaps = false
+            setOnClickListener { onClick() }
+            layoutParams = android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        fun row(vararg views: View) = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.HORIZONTAL
+            setPadding(0, px(8), 0, 0)
+            views.forEach { addView(it) }
+        }
+        fun afterSeek() {
+            root.postDelayed({
+                syncers.forEach { it() }
+                refreshLabels()
+            }, 200L)
+        }
+
+        root.addView(row(
+            button("-1s") {
+                seekToGlobalPosition((getGlobalPosition() - 1000L).coerceAtLeast(0L), force = true)
+                afterSeek()
+            },
+            button("+1s") {
+                seekToGlobalPosition(getGlobalPosition() + 1000L, force = true)
+                afterSeek()
+            },
+            button("Add keyframe") {
+                val t = getGlobalPosition()
+                val pan = cam.panAt(t)
+                val z = cam.zoomAt(t)
+                cam = cam.copy(
+                    positionKeyframes = upsertKey(cam.positionKeyframes, EditOperation.KeyframePoint(t, pan.first, pan.second, ease)),
+                    zoomKeyframes = upsertKey(cam.zoomKeyframes, EditOperation.KeyframePoint(t, z, 0f, ease))
+                )
+                viewModel.updateOperation(cam)
+                refreshLabels()
+            }
+        ))
+        root.addView(row(
+            button("Clear keyframes") {
+                val t = getGlobalPosition()
+                val pan = cam.panAt(t)
+                cam = cam.copy(panX = pan.first, panY = pan.second, zoom = cam.zoomAt(t),
+                    positionKeyframes = emptyList(), zoomKeyframes = emptyList())
+                viewModel.updateOperation(cam)
+                syncUiWithPlayer()
+                refreshLabels()
+            },
+            button("Remove camera") {
+                cameraPreviewOverride = null
+                viewModel.removeOperation(cam.id)
+                sheet.dismiss()
+                syncUiWithPlayer()
+            }
+        ))
+
+        refreshLabels()
+        sheet.setContentView(root)
+        sheet.window?.setDimAmount(0f)
+        sheet.setOnDismissListener {
+            cameraPreviewOverride = null
+            syncUiWithPlayer()
+        }
+        sheet.show()
+        sheet.behavior.state = com.google.android.material.bottomsheet.BottomSheetBehavior.STATE_EXPANDED
     }
 
     /** Creates a Null layer and opens it for keyframing. */

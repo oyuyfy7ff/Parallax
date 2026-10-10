@@ -472,6 +472,60 @@ sealed class EditOperation : Serializable {
         }
     }
 
+    /**
+     * Camera (MVP: pan + zoom). One per project. It moves/zooms the whole composition
+     * (main clip, text, images) like a real camera: panning right shifts every layer left.
+     * panX/panY = camera center offset from the frame center, as a fraction of the frame
+     * (0,0 = centered). zoom 1.0 = no zoom, 2.0 = twice as close.
+     * Keyframe times are absolute project time in ms.
+     */
+    data class CameraLayer(
+        val name: String = "Camera",
+        val panX: Float = 0f,
+        val panY: Float = 0f,
+        val zoom: Float = 1f,
+        val positionKeyframes: List<KeyframePoint> = emptyList(),
+        val zoomKeyframes: List<KeyframePoint> = emptyList(),
+        val id: String = System.nanoTime().toString()
+    ) : EditOperation() {
+
+        val isIdentity: Boolean
+            get() = panX == 0f && panY == 0f && zoom == 1f &&
+                positionKeyframes.isEmpty() && zoomKeyframes.isEmpty()
+
+        fun panAt(absMs: Long): Pair<Float, Float> {
+            if (positionKeyframes.isEmpty()) return Pair(panX, panY)
+            val k = positionKeyframes.sortedBy { it.timeMs }
+            if (absMs <= k.first().timeMs) return Pair(k.first().valueX, k.first().valueY)
+            if (absMs >= k.last().timeMs) return Pair(k.last().valueX, k.last().valueY)
+            val i = k.indexOfLast { it.timeMs <= absMs }
+            val a = k[i]
+            val b = k[i + 1]
+            val p = easeProgress(a.interpolationType, (absMs - a.timeMs).toFloat() / (b.timeMs - a.timeMs))
+            return Pair(a.valueX + p * (b.valueX - a.valueX), a.valueY + p * (b.valueY - a.valueY))
+        }
+
+        fun zoomAt(absMs: Long): Float {
+            val z = if (zoomKeyframes.isEmpty()) {
+                zoom
+            } else {
+                val k = zoomKeyframes.sortedBy { it.timeMs }
+                if (absMs <= k.first().timeMs) {
+                    k.first().valueX
+                } else if (absMs >= k.last().timeMs) {
+                    k.last().valueX
+                } else {
+                    val i = k.indexOfLast { it.timeMs <= absMs }
+                    val a = k[i]
+                    val b = k[i + 1]
+                    val p = easeProgress(a.interpolationType, (absMs - a.timeMs).toFloat() / (b.timeMs - a.timeMs))
+                    a.valueX + p * (b.valueX - a.valueX)
+                }
+            }
+            return z.coerceIn(0.1f, 20f)
+        }
+    }
+
     data class AddSubtitles(
         val subtitlesUri: Uri,
         val srtContent: String,
@@ -608,6 +662,7 @@ val EditOperation.id: String
         is EditOperation.Adjust -> id
         is EditOperation.CanvasBackground -> id
         is EditOperation.NullLayer -> id
+        is EditOperation.CameraLayer -> id
     }
 
 
