@@ -222,6 +222,82 @@ sealed class EditOperation : Serializable {
     }
 
     
+    /**
+     * Main-clip transform with optional keyframes, same idea as MaskConfig.
+     * Position is an offset from the center as a fraction of the frame (0 = centered).
+     * Scale 1.0 = original size, rotation in degrees, opacity 0..1.
+     */
+    data class ClipTransform(
+        val offsetX: Float = 0f,
+        val offsetY: Float = 0f,
+        val scale: Float = 1f,
+        val rotation: Float = 0f,
+        val opacity: Float = 1f,
+        val positionKeyframes: List<KeyframePoint> = emptyList(),
+        val scaleKeyframes: List<KeyframePoint> = emptyList(),
+        val rotationKeyframes: List<KeyframePoint> = emptyList(),
+        val opacityKeyframes: List<KeyframePoint> = emptyList()
+    ) : Serializable {
+
+        val isIdentity: Boolean
+            get() = offsetX == 0f && offsetY == 0f && scale == 1f && rotation == 0f && opacity == 1f &&
+                positionKeyframes.isEmpty() && scaleKeyframes.isEmpty() &&
+                rotationKeyframes.isEmpty() && opacityKeyframes.isEmpty()
+
+        private fun scalarAt(keys: List<KeyframePoint>, t: Long, default: Float): Float {
+            if (keys.isEmpty()) return default
+            val s = keys.sortedBy { it.timeMs }
+            if (t <= s.first().timeMs) return s.first().valueX
+            if (t >= s.last().timeMs) return s.last().valueX
+            for (i in 0 until s.size - 1) {
+                val a = s[i]
+                val b = s[i + 1]
+                if (t >= a.timeMs && t <= b.timeMs) {
+                    if (b.timeMs == a.timeMs) return b.valueX
+                    val p = easeProgress(a.interpolationType, (t - a.timeMs).toFloat() / (b.timeMs - a.timeMs))
+                    return a.valueX + p * (b.valueX - a.valueX)
+                }
+            }
+            return default
+        }
+
+        fun positionAt(t: Long): Pair<Float, Float> {
+            if (positionKeyframes.isEmpty()) return Pair(offsetX, offsetY)
+            val s = positionKeyframes.sortedBy { it.timeMs }
+            if (t <= s.first().timeMs) return Pair(s.first().valueX, s.first().valueY)
+            if (t >= s.last().timeMs) return Pair(s.last().valueX, s.last().valueY)
+            for (i in 0 until s.size - 1) {
+                val a = s[i]
+                val b = s[i + 1]
+                if (t >= a.timeMs && t <= b.timeMs) {
+                    if (b.timeMs == a.timeMs) return Pair(b.valueX, b.valueY)
+                    val p = easeProgress(a.interpolationType, (t - a.timeMs).toFloat() / (b.timeMs - a.timeMs))
+                    return Pair(
+                        a.valueX + p * (b.valueX - a.valueX),
+                        a.valueY + p * (b.valueY - a.valueY)
+                    )
+                }
+            }
+            return Pair(offsetX, offsetY)
+        }
+
+        fun scaleAt(t: Long): Float = scalarAt(scaleKeyframes, t, scale)
+        fun rotationAt(t: Long): Float = scalarAt(rotationKeyframes, t, rotation)
+        fun opacityAt(t: Long): Float = scalarAt(opacityKeyframes, t, opacity)
+
+        fun evaluatedAt(t: Long): ClipTransform {
+            if (isIdentity) return this
+            val pos = positionAt(t)
+            return copy(
+                offsetX = pos.first,
+                offsetY = pos.second,
+                scale = scaleAt(t),
+                rotation = rotationAt(t),
+                opacity = opacityAt(t)
+            )
+        }
+    }
+
     data class MergeItem(
         val uri: Uri,
         val durationMs: Long,
@@ -233,7 +309,8 @@ sealed class EditOperation : Serializable {
         val isReversed: Boolean = false,
         val isMirrored: Boolean = false,
         val maskConfig: MaskConfig = MaskConfig(),
-        val isImage: Boolean = false
+        val isImage: Boolean = false,
+        val transform: ClipTransform = ClipTransform()
     ) : Serializable {
         val trimmedDurationMs: Long
             get() = ((trimEndMs - trimStartMs) / speed).toLong()
