@@ -332,6 +332,12 @@ sealed class EditOperation : Serializable {
         val videoUris: List<Uri> get() = items.map { it.uri }
     }
 
+    /** Transform (position, scale, rotation, opacity) for the main track base clip (index 0) */
+    data class TransformMain(
+        val transform: ClipTransform,
+        val id: String = System.nanoTime().toString()
+    ) : EditOperation()
+
     /** Mask configuration for the main track video base (index 0) */
     data class MaskMain(
         val maskConfig: MaskConfig,
@@ -588,6 +594,7 @@ val EditOperation.id: String
         is EditOperation.ReverseMain -> id
         is EditOperation.MirrorMain -> id
         is EditOperation.MaskMain -> id
+        is EditOperation.TransformMain -> id
         is EditOperation.Crop -> id
         is EditOperation.AddText -> id
         is EditOperation.Merge -> id

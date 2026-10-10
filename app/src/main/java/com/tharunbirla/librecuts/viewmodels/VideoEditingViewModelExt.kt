@@ -434,3 +434,29 @@ fun VideoEditingViewModel.setScrubProxyUri(dependencyId: String, proxyUri: Uri) 
         }
     })
 }
+
+fun VideoEditingViewModel.updateClipTransform(index: Int, transform: EditOperation.ClipTransform) {
+    executeCommand(MutateListCommand("Transform Clip") { ops ->
+        val newOps = ops.toMutableList()
+        if (index == 0) {
+            val idx = newOps.indexOfFirst { it is EditOperation.TransformMain }
+            if (idx != -1) {
+                newOps[idx] = EditOperation.TransformMain(transform)
+            } else {
+                newOps.add(EditOperation.TransformMain(transform))
+            }
+        } else {
+            val mergeIdx = newOps.indexOfFirst { it is EditOperation.Merge }
+            if (mergeIdx != -1) {
+                val mergeOp = newOps[mergeIdx] as EditOperation.Merge
+                val items = mergeOp.items.toMutableList()
+                val targetIndex = index - 1
+                if (targetIndex >= 0 && targetIndex < items.size) {
+                    items[targetIndex] = items[targetIndex].copy(transform = transform)
+                    newOps[mergeIdx] = mergeOp.copy(items = items)
+                }
+            }
+        }
+        newOps
+    })
+}
