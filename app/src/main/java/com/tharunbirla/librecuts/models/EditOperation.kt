@@ -680,3 +680,19 @@ fun easeProgress(type: String, p: Float): Float = when (type) {
     "hold" -> 0f
     else -> p
 }
+
+/** Eased (x, y) of [keys] at [t]; holds the first/last key outside the range, defaults when empty. */
+fun keyframePairAt(keys: List<EditOperation.KeyframePoint>, t: Long, defX: Float, defY: Float): Pair<Float, Float> {
+    if (keys.isEmpty()) return Pair(defX, defY)
+    val s = keys.sortedBy { it.timeMs }
+    if (t <= s.first().timeMs) return Pair(s.first().valueX, s.first().valueY)
+    if (t >= s.last().timeMs) return Pair(s.last().valueX, s.last().valueY)
+    val i = s.indexOfLast { it.timeMs <= t } // a.timeMs <= t < b.timeMs, so no zero division
+    val a = s[i]
+    val b = s[i + 1]
+    val p = easeProgress(a.interpolationType, (t - a.timeMs).toFloat() / (b.timeMs - a.timeMs))
+    return Pair(a.valueX + p * (b.valueX - a.valueX), a.valueY + p * (b.valueY - a.valueY))
+}
+
+fun keyframeValueAt(keys: List<EditOperation.KeyframePoint>, t: Long, default: Float): Float =
+    keyframePairAt(keys, t, default, 0f).first

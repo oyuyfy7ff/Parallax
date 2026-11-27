@@ -340,6 +340,34 @@ class VideoEditingViewModel : ViewModel() {
         return expr
     }
 
+    /**
+     * Filter chain for a clip stream plus overlay x/y that apply a main-clip transform the way
+     * applyClipTransformPreview does: rotate and scale about the clip center, offset as a fraction
+     * of the canvas, opacity. Keyframe times are clip-relative. Null when there is nothing to do.
+     */
+    private fun buildClipTransformFilters(tr: EditOperation.ClipTransform?): Pair<String, String>? {
+        if (tr == null || tr.isIdentity) return null
+        fun kf(keys: List<EditOperation.KeyframePoint>, useY: Boolean, default: Float, timeVar: String = "t") =
+            if (keys.isEmpty()) default.toString() else buildFFmpegInterpolationExpr(keys, useY, default, 0L, timeVar)
+        val chain = mutableListOf("format=rgba")
+        if (tr.rotation != 0f || tr.rotationKeyframes.isNotEmpty()) {
+            chain.add("rotate=a='(${kf(tr.rotationKeyframes, false, tr.rotation)})*PI/180':c=black@0:ow='hypot(iw\\,ih)':oh=ow")
+        }
+        if (tr.opacityKeyframes.isNotEmpty()) {
+            // geq only has T for time; it is slow, so only when opacity is animated.
+            chain.add("geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='alpha(X\\,Y)*clip(${kf(tr.opacityKeyframes, false, tr.opacity, "T")}\\,0\\,1)'")
+        } else if (tr.opacity < 1f) {
+            chain.add("colorchannelmixer=aa=${tr.opacity.coerceIn(0f, 1f)}")
+        }
+        if (tr.scale != 1f || tr.scaleKeyframes.isNotEmpty()) {
+            val sc = "max(0.01\\,${kf(tr.scaleKeyframes, false, tr.scale)})"
+            chain.add("scale=w='max(2\\,trunc(iw*$sc/2)*2)':h='max(2\\,trunc(ih*$sc/2)*2)':eval=frame")
+        }
+        val x = kf(tr.positionKeyframes, false, tr.offsetX)
+        val y = kf(tr.positionKeyframes, true, tr.offsetY)
+        return Pair(chain.joinToString(","), "x='(W-w)/2+($x)*W':y='(H-h)/2+($y)*H':eval=frame")
+    }
+
     private fun formatColorForFFmpeg(colorHex: String): String {
         if (!colorHex.startsWith("#")) return colorHex
         return when (colorHex.length) {
@@ -1005,6 +1033,17 @@ class VideoEditingViewModel : ViewModel() {
                     mergeOp?.items?.getOrNull(i - 1)?.maskConfig ?: EditOperation.MaskConfig()
                 }
                 
+                val clipTransform = buildClipTransformFilters(
+                    if (i == 0) operations.filterIsInstance<EditOperation.TransformMain>().lastOrNull()?.transform
+                    else mergeOp?.items?.getOrNull(i - 1)?.transform
+                )
+                // Overlay of the fitted clip on its canvas, through the clip transform when there is one.
+                fun overlayFg(): String {
+                    if (clipTransform == null) return "[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2"
+                    filterParts.add("[fg$i]${clipTransform.first}[fgt$i]")
+                    return "[bg$i][fgt$i]overlay=${clipTransform.second}"
+                }
+
                 // 1. Prepare raw video with basic visual filters
                 var preFilters = "setpts=PTS-STARTPTS"
                 if (lutFilterExpr != null) preFilters += ",$lutFilterExpr"
@@ -1044,14 +1083,14 @@ class VideoEditingViewModel : ViewModel() {
                     filterParts.add("[pre$i]split=2[bg_orig$i][fg_orig$i]")
                     filterParts.add("[bg_orig$i]$bgScale[bg$i]")
                     filterParts.add("[fg_orig$i]$fgScale[fg$i]")
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,format=yuv420p[norm$i]")
+                    filterParts.add("${overlayFg()},setsar=1,fps=30,format=yuv420p[norm$i]")
                 } else if (bgOp?.type == EditOperation.CanvasBackground.BackgroundType.IMAGE && bgImageIndex != -1) {
                     val bgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=increase,crop=$mainWidth:$mainHeight"
                     val fgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease"
                     filterParts.add("[$bgImageIndex:v]$bgScale[bg$i]")
                     filterParts.add("[pre$i]$fgScale[fg$i]")
                     // Use shortest=1 in case the loop goes on forever, but we specified -loop 1 which creates an infinite stream for image
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
+                    filterParts.add("${overlayFg()}:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
                 } else {
                     // Default COLOR
                     val color = bgOp?.colorHex ?: "black"
@@ -1059,7 +1098,7 @@ class VideoEditingViewModel : ViewModel() {
                     // Create a solid color background of mainWidth x mainHeight
                     filterParts.add("color=c=$padColor:s=${mainWidth}x${mainHeight}:r=30[bg$i]")
                     filterParts.add("[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]")
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
+                    filterParts.add("${overlayFg()}:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
                 }
 
                 val isClipMuted = operations.filterIsInstance<EditOperation.MuteClip>().find { it.index == i }?.isMuted ?: false
@@ -1419,6 +1458,15 @@ class VideoEditingViewModel : ViewModel() {
             currentInputVideoLabel = "[cfv]"
         }
 
+        val clipTransform = buildClipTransformFilters(operations.filterIsInstance<EditOperation.TransformMain>().lastOrNull()?.transform)
+        if (clipTransform != null) {
+            filterComplexParts.add("${currentInputVideoLabel}split=2[ct_base_in][ct_fg_in]")
+            filterComplexParts.add("[ct_base_in]drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[ct_base]")
+            filterComplexParts.add("[ct_fg_in]${clipTransform.first}[ct_fg]")
+            filterComplexParts.add("[ct_base][ct_fg]overlay=${clipTransform.second}[ct_v]")
+            currentInputVideoLabel = "[ct_v]"
+        }
+
         // ── Video filter stages (crop, text, image overlays) ──
         val (videoStages, finalVideoLabel) = buildVideoFilterStages(
             operations = videoOps,
@@ -1540,7 +1588,7 @@ class VideoEditingViewModel : ViewModel() {
         }
 
         // ── Assemble the command ──
-        val hasVideoFilters = videoStages.isNotEmpty() || prepFilters.isNotEmpty()
+        val hasVideoFilters = videoStages.isNotEmpty() || prepFilters.isNotEmpty() || clipTransform != null
         val hasAudioFilters = finalAudioLabel != null
 
         if (hasVideoFilters || hasAudioFilters) {
