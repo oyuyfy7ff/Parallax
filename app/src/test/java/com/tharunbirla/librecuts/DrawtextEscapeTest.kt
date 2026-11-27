@@ -14,6 +14,6 @@ class DrawtextEscapeTest {
         assertEquals("it\\\\\\'s", escapeDrawtext("it's"))
         assertEquals("back\\\\\\\\slash", escapeDrawtext("back\\slash"))
         assertEquals("say \\\"hi\\\"", escapeDrawtext("say \"hi\""))
-        assertEquals("\\[x\\]\\,y\;z", escapeDrawtext("[x],y;z"))
+        assertEquals("\\[x\\]\\,y\\;z", escapeDrawtext("[x],y;z"))
     }
 }
