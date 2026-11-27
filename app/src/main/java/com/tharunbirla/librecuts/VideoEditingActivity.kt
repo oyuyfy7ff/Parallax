@@ -1855,6 +1855,12 @@ class VideoEditingActivity : AppCompatActivity() {
                 toolbar.findViewById<Button>(R.id.btnUploadSrt)?.setBounceClickListener {
                     pickSrtFile()
                 }
+                toolbar.findViewById<Button>(R.id.btnAutoSubtitles)?.setBounceClickListener {
+                    autoGenerateSubtitles()
+                }
+                toolbar.findViewById<Button>(R.id.btnSubtitleApiSettings)?.setBounceClickListener {
+                    showTranscriptionSettings()
+                }
                 toolbar.findViewById<View>(R.id.btnChangeSrt)?.setBounceClickListener {
                     pickSrtFile()
                 }
@@ -3304,6 +3310,136 @@ class VideoEditingActivity : AppCompatActivity() {
         textOverlayView?.subtitleOperation = newOp
     }
 
+    /** Replace the project's subtitles track (there is only ever one). */
+    private fun setSubtitlesTrack(uri: Uri, content: String, name: String, cues: List<com.tharunbirla.librecuts.models.SubtitleCue>) {
+        viewModel.project.value?.operations?.filterIsInstance<EditOperation.AddSubtitles>()?.forEach { op ->
+            viewModel.deleteOperation(op.id)
+        }
+        viewModel.addOperation(EditOperation.AddSubtitles(subtitlesUri = uri, srtContent = content, fileName = name, cues = cues))
+        Toast.makeText(this, "Subtitles added: ${cues.size} captions", Toast.LENGTH_SHORT).show()
+        updateSubtitlesUi()
+        textOverlayView?.setSubtitleCues(cues)
+    }
+
+    // ---------- Automatic subtitles (speech-to-text API) ----------
+    private fun transcriptionPrefs() = getSharedPreferences("librecuts_transcription", Context.MODE_PRIVATE)
+
+    /** API settings; [onSaved] runs after a key is stored. The key stays on the device (excluded from backups). */
+    private fun showTranscriptionSettings(onSaved: (() -> Unit)? = null) {
+        val prefs = transcriptionPrefs()
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        fun input(hint: String, value: String?, password: Boolean = false) = com.google.android.material.textfield.TextInputEditText(this).apply {
+            this.hint = hint
+            setText(value ?: "")
+            isSingleLine = true
+            if (password) inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val urlIn = input("API URL", prefs.getString("base_url", com.tharunbirla.librecuts.utils.Transcriber.DEFAULT_BASE_URL))
+        val keyIn = input("API key", prefs.getString("api_key", null), password = true)
+        val modelIn = input("Model", prefs.getString("model", com.tharunbirla.librecuts.utils.Transcriber.DEFAULT_MODEL))
+        val langIn = input("Language code, e.g. th or en (optional)", prefs.getString("language", null))
+        val note = TextView(this).apply {
+            text = "Audio is uploaded to this provider only when you tap Auto-generate. Works with OpenAI-compatible endpoints (OpenAI, Groq, self-hosted Whisper)."
+            textSize = 12f
+        }
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            listOf(urlIn, keyIn, modelIn, langIn, note).forEach { addView(it) }
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Speech-to-text API")
+            .setView(form)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Remove key") { _, _ ->
+                prefs.edit().remove("api_key").apply()
+                Toast.makeText(this, "API key removed", Toast.LENGTH_SHORT).show()
+            }
+            .setPositiveButton("Save") { _, _ ->
+                val url = urlIn.text?.toString()?.trim().orEmpty()
+                try {
+                    com.tharunbirla.librecuts.utils.Transcriber.endpoint(url)
+                } catch (e: IllegalArgumentException) {
+                    Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val key = keyIn.text?.toString()?.trim().orEmpty()
+                prefs.edit()
+                    .putString("base_url", url)
+                    .putString("api_key", key)
+                    .putString("model", modelIn.text?.toString()?.trim().orEmpty())
+                    .putString("language", langIn.text?.toString()?.trim().orEmpty())
+                    .apply()
+                if (key.isNotEmpty()) onSaved?.invoke()
+            }
+            .show()
+    }
+
+    /** Export the project's audio mix, send it to the speech-to-text API, and add the result as the subtitles track. */
+    private fun autoGenerateSubtitles() {
+        val prefs = transcriptionPrefs()
+        val apiKey = prefs.getString("api_key", null)
+        if (apiKey.isNullOrBlank()) {
+            showTranscriptionSettings { autoGenerateSubtitles() }
+            return
+        }
+        if (!::tempInputFile.isInitialized) {
+            Toast.makeText(this, "No video loaded", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val baseUrl = prefs.getString("base_url", null) ?: com.tharunbirla.librecuts.utils.Transcriber.DEFAULT_BASE_URL
+        val model = prefs.getString("model", null).orEmpty()
+        val language = prefs.getString("language", null)
+        val progress = MaterialAlertDialogBuilder(this)
+            .setTitle("Generating subtitles")
+            .setMessage("Preparing audio and transcribing… this can take a minute.")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val audio = File(cacheDir, "transcribe_${System.currentTimeMillis()}.mp3")
+            try {
+                // Same audio mix as "Export audio", so caption times follow the edited timeline; small mono MP3 to stay under upload limits.
+                val prev = Triple(viewModel.exportResolution.value, viewModel.exportFps.value, viewModel.exportAudioOnly.value)
+                viewModel.setExportSettings(prev.first, prev.second, true)
+                val built = try {
+                    viewModel.buildConsolidatedFFmpegCommand(tempInputFile.absolutePath, audio.absolutePath, fontFilePath, this@VideoEditingActivity)
+                } finally {
+                    viewModel.setExportSettings(prev.first, prev.second, prev.third)
+                }
+                val small = "-c:a libmp3lame -ac 1 -ar 16000 -b:a 32k"
+                val cmd = if (built == null || built.contains(" -c copy ")) {
+                    "-y -i \"${tempInputFile.absolutePath}\" -vn $small \"${audio.absolutePath}\""
+                } else {
+                    built.replace("-c:a libmp3lame -b:a 192k", small)
+                }
+                val result = ffmpegEngine.executeCommand(cmd)
+                if (result !is FFmpegRenderEngine.RenderResult.Success || !audio.exists() || audio.length() == 0L) {
+                    throw java.io.IOException("This project has no audio to transcribe")
+                }
+                val srt = withContext(Dispatchers.IO) {
+                    com.tharunbirla.librecuts.utils.Transcriber.transcribeToSrt(audio, baseUrl, apiKey, model, language)
+                }
+                val cues = com.tharunbirla.librecuts.utils.SubtitleParser.parse(srt)
+                if (cues.isEmpty()) throw java.io.IOException("No speech was recognised")
+                val srtFile = withContext(Dispatchers.IO) {
+                    File(cacheDir, "subtitles_auto_${System.currentTimeMillis()}.srt").apply { writeText(srt) }
+                }
+                setSubtitlesTrack(Uri.fromFile(srtFile), srt, "Auto subtitles.srt", cues)
+            } catch (e: Exception) {
+                Log.w(TAG, "Auto subtitles failed: ${e.message}")
+                MaterialAlertDialogBuilder(this@VideoEditingActivity)
+                    .setTitle("Could not generate subtitles")
+                    .setMessage(e.message ?: e.javaClass.simpleName)
+                    .setPositiveButton("OK", null)
+                    .setNeutralButton("API settings") { _, _ -> showTranscriptionSettings() }
+                    .show()
+            } finally {
+                progress.dismiss()
+                withContext(Dispatchers.IO) { audio.delete() }
+            }
+        }
+    }
+
     private fun pickSrtFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             type = "*/*"
@@ -4751,12 +4887,6 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                         }
                         if (cues.isNotEmpty()) {
-                            // First remove any existing subtitles operations so we only have one subtitles track
-                            val project = viewModel.project.value
-                            project?.operations?.filterIsInstance<EditOperation.AddSubtitles>()?.forEach { op ->
-                                viewModel.deleteOperation(op.id)
-                            }
-                            
                             val name = try {
                                 var displayName = "subtitles.srt"
                                 contentResolver.query(srtUri, null, null, null, null)?.use { cursor ->
@@ -4770,17 +4900,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 "subtitles.srt"
                             }
 
-                            viewModel.addOperation(
-                                EditOperation.AddSubtitles(
-                                    subtitlesUri = tempUri,
-                                    srtContent = content,
-                                    fileName = name,
-                                    cues = cues
-                                )
-                            )
-                            Toast.makeText(this@VideoEditingActivity, "Subtitles added: ${cues.size} captions", Toast.LENGTH_SHORT).show()
-                            updateSubtitlesUi()
-                            textOverlayView?.setSubtitleCues(cues)
+                            setSubtitlesTrack(tempUri, content, name, cues)
                         } else {
                             Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_parse_subtitle_file, Toast.LENGTH_LONG).show()
                         }
