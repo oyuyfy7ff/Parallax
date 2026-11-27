@@ -1,5 +1,6 @@
 package com.tharunbirla.librecuts.services
 
+import com.tharunbirla.librecuts.utils.escapeDrawtext
 import android.content.Context
 import android.net.Uri
 import android.util.Log
@@ -619,10 +620,7 @@ class FFmpegRenderEngine(private val context: Context) {
         positionParam: String,
         fontFilePath: String?
     ): String {
-        val escapedText = text
-            .replace("\\", "\\\\")
-            .replace("'", "\\\\'")
-            .replace(":", "\\:")
+        val escapedText = escapeDrawtext(text)
 
         val fontPart = if (!fontFilePath.isNullOrBlank()) {
             val escapedFontPath = fontFilePath
@@ -635,7 +633,7 @@ class FFmpegRenderEngine(private val context: Context) {
             ""
         }
 
-        return "drawtext=${fontPart}text='$escapedText':fontcolor=white:fontsize=$fontSize:$positionParam"
+        return "drawtext=${fontPart}text=$escapedText:expansion=none:fontcolor=white:fontsize=$fontSize:$positionParam"
     }
 
     private fun buildCropFilter(aspectRatio: String): String? = when (aspectRatio) {
