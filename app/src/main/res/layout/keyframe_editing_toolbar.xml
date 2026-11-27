@@ -72,13 +72,93 @@
                 app:tint="@color/activeTool" />
         </LinearLayout>
 
-        <com.tharunbirla.librecuts.customviews.KeyframeGraphView
-            android:id="@+id/graphKeyframeEasing"
-            android:layout_width="120dp"
-            android:layout_height="80dp"
-            android:layout_gravity="center_horizontal"
+        <!-- Easing curve editor for the keyframe at the playhead (shown only on a keyframe) -->
+        <LinearLayout
+            android:id="@+id/layoutKeyframeEasing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
             android:layout_marginTop="8dp"
-            android:visibility="gone" />
+            android:visibility="gone">
+
+            <com.tharunbirla.librecuts.customviews.KeyframeGraphView
+                android:id="@+id/graphKeyframeEasing"
+                android:layout_width="match_parent"
+                android:layout_height="150dp"
+                android:layout_marginHorizontal="16dp"
+                android:contentDescription="Easing curve. Drag the two handles to shape it." />
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:scrollbars="none"
+                android:paddingHorizontal="12dp"
+                android:clipToPadding="false">
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chipsKeyframeEasing"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:singleLine="true"
+                    app:chipSpacingHorizontal="6dp">
+
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Linear"
+                        android:tag="linear" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Ease In"
+                        android:tag="ease_in" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Ease Out"
+                        android:tag="ease_out" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Ease In-Out"
+                        android:tag="ease_in_out" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Smooth"
+                        android:tag="bezier:0.250,0.100,0.250,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Snappy"
+                        android:tag="bezier:0.200,0.000,0.000,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Back"
+                        android:tag="bezier:0.340,1.560,0.640,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Anticipate"
+                        android:tag="bezier:0.360,-0.560,0.660,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Hold"
+                        android:tag="hold" />
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
+        </LinearLayout>
 
         <!-- Value Slider Row (hidden by default, shown for Opacity/Speed) -->
         <LinearLayout

@@ -9650,12 +9650,20 @@ class VideoEditingActivity : AppCompatActivity() {
             }
         }
         val kf = list?.firstOrNull { Math.abs(it.timeMs - rel) < 150L }
+        val easingPanel = keyframeEditingToolbar?.findViewById<View>(R.id.layoutKeyframeEasing)
         if (kf == null) {
-            graph.visibility = View.GONE
+            easingPanel?.visibility = View.GONE
             return
         }
-        graph.visibility = View.VISIBLE
-        graph.easingType = kf.interpolationType
+        easingPanel?.visibility = View.VISIBLE
+        keyframeEditingToolbar?.findViewById<com.google.android.material.chip.ChipGroup>(R.id.chipsKeyframeEasing)?.let { chips ->
+            for (i in 0 until chips.childCount) {
+                val chip = chips.getChildAt(i)
+                chip.setOnClickListener { graph.applyPreset(chip.tag as String) }
+            }
+        }
+        // Old project files can hold a null type (Gson), which means linear.
+        graph.easingType = (kf.interpolationType as String?) ?: "linear"
         val prop = activeKeyframeProperty
         val relFinal = rel
         graph.onEasingChange = { type -> setKeyframeEasing(prop, relFinal, type) }

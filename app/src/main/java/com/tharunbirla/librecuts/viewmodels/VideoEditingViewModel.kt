@@ -298,7 +298,7 @@ class VideoEditingViewModel : ViewModel() {
         timeVar: String = "t"
     ): String {
         if (keyframes.isEmpty()) return defaultValue.toString()
-        val sorted = keyframes.sortedBy { it.timeMs }
+        val sorted = com.tharunbirla.librecuts.models.expandCurvedKeyframes(keyframes.sortedBy { it.timeMs })
         val startSec = startTimeMs / 1000.0
         val tRel = "($timeVar-$startSec)"
         

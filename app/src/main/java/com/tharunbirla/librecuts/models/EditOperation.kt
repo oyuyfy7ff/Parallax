@@ -690,7 +690,73 @@ fun easeProgress(type: String, p: Float): Float = when (type) {
     "ease_out" -> p * (2f - p)
     "ease_in_out" -> p * p * (3f - 2f * p)
     "hold" -> 0f
-    else -> p
+    else -> easingHandles(type)?.let { cubicBezierEase(it, p) } ?: p
+}
+
+/** Custom easing curves are stored in interpolationType as "bezier:x1,y1,x2,y2" (CSS cubic-bezier handles). */
+fun bezierEasing(x1: Float, y1: Float, x2: Float, y2: Float): String =
+    String.format(java.util.Locale.US, "bezier:%.3f,%.3f,%.3f,%.3f", x1, y1, x2, y2)
+
+/**
+ * Handles (x1, y1, x2, y2) of an easing type, or null for "hold". The built-in types are exact cubics
+ * with evenly spaced x handles, so they open in the curve editor without changing shape.
+ */
+fun easingHandles(type: String): FloatArray? = when {
+    type == "hold" -> null
+    type == "ease_in" -> floatArrayOf(1f / 3, 0f, 2f / 3, 1f / 3)
+    type == "ease_out" -> floatArrayOf(1f / 3, 2f / 3, 2f / 3, 1f)
+    type == "ease_in_out" -> floatArrayOf(1f / 3, 0f, 2f / 3, 1f)
+    type.startsWith("bezier:") -> type.removePrefix("bezier:").split(",").mapNotNull { it.trim().toFloatOrNull() }
+        .takeIf { it.size == 4 && it.all { v -> v.isFinite() } }
+        ?.let { floatArrayOf(it[0].coerceIn(0f, 1f), it[1].coerceIn(-1f, 2f), it[2].coerceIn(0f, 1f), it[3].coerceIn(-1f, 2f)) }
+        ?: floatArrayOf(1f / 3, 1f / 3, 2f / 3, 2f / 3)
+    else -> floatArrayOf(1f / 3, 1f / 3, 2f / 3, 2f / 3)
+}
+
+/** y of the cubic Bezier (0,0)-(x1,y1)-(x2,y2)-(1,1) at x = [p]. x is monotonic because x1, x2 are in [0, 1]. */
+fun cubicBezierEase(h: FloatArray, p: Float): Float {
+    if (p <= 0f) return 0f
+    if (p >= 1f) return 1f
+    fun bez(a: Float, b: Float, t: Float): Float { val u = 1 - t; return 3 * u * u * t * a + 3 * u * t * t * b + t * t * t }
+    var lo = 0f
+    var hi = 1f
+    var t = p
+    repeat(30) { // bisection: always converges, 30 steps is far below float precision
+        val x = bez(h[0], h[2], t)
+        if (x < p) lo = t else hi = t
+        t = (lo + hi) / 2
+    }
+    return bez(h[1], h[3], t)
+}
+
+/**
+ * For FFmpeg, which only gets simple expressions: replaces each custom-curve segment with short linear
+ * steps sampled from the same curve the preview uses.
+ */
+fun expandCurvedKeyframes(sorted: List<EditOperation.KeyframePoint>, steps: Int = 24): List<EditOperation.KeyframePoint> {
+    // Gson can leave interpolationType null in old project files, so read it as nullable.
+    fun curved(k: EditOperation.KeyframePoint) = (k.interpolationType as String?)?.startsWith("bezier:") == true
+    if (sorted.none { curved(it) }) return sorted
+    val out = mutableListOf<EditOperation.KeyframePoint>()
+    for (i in sorted.indices) {
+        val a = sorted[i]
+        val b = sorted.getOrNull(i + 1)
+        if (b == null || !curved(a) || b.timeMs <= a.timeMs) {
+            out.add(a)
+            continue
+        }
+        for (s in 0 until steps) {
+            val f = s / steps.toFloat()
+            val e = easeProgress(a.interpolationType, f)
+            out.add(EditOperation.KeyframePoint(
+                a.timeMs + ((b.timeMs - a.timeMs) * f).toLong(),
+                a.valueX + e * (b.valueX - a.valueX),
+                a.valueY + e * (b.valueY - a.valueY),
+                "linear"
+            ))
+        }
+    }
+    return out
 }
 
 /** Eased (x, y) of [keys] at [t]; holds the first/last key outside the range, defaults when empty. */
