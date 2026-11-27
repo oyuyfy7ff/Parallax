@@ -62,6 +62,10 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     private var isDragging = false
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
+    private var dragDownX = 0f
+    private var dragDownY = 0f
+    /** Fraction of finger movement applied while dragging; below 1 gives fine positioning (keyframe editing). */
+    var dragPrecision = 1f
 
     // ── Chroma Key Picker State ──
     var isColorPickingMode = false
@@ -450,6 +454,8 @@ class DraggableImageOverlayView @JvmOverloads constructor(
                     }
                     isDragging = true
                     dragOffsetX = touchX - imageView.x
+                    dragDownX = touchX
+                    dragDownY = touchY
                     dragOffsetY = touchY - imageView.y
                     return true
                 }
@@ -481,6 +487,8 @@ class DraggableImageOverlayView @JvmOverloads constructor(
                     dragOffsetY = event.y
                 } else {
                     dragOffsetX = event.x - imageView.x
+                    dragDownX = event.x
+                    dragDownY = event.y
                     dragOffsetY = event.y - imageView.y
                 }
                 return true
@@ -503,8 +511,8 @@ class DraggableImageOverlayView @JvmOverloads constructor(
                         return true
                     }
                     val videoRect = getVideoRect()
-                    val centerX = event.x - dragOffsetX + imageView.width / 2f
-                    val centerY = event.y - dragOffsetY + imageView.height / 2f
+                    val centerX = dragDownX + (event.x - dragDownX) * dragPrecision - dragOffsetX + imageView.width / 2f
+                    val centerY = dragDownY + (event.y - dragDownY) * dragPrecision - dragOffsetY + imageView.height / 2f
 
                     val constrainedCenterX = centerX.coerceIn(videoRect.left, videoRect.right)
                     val constrainedCenterY = centerY.coerceIn(videoRect.top, videoRect.bottom)

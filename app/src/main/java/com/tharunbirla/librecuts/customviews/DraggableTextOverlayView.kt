@@ -96,6 +96,10 @@ class DraggableTextOverlayView @JvmOverloads constructor(
     private var isDragging = false
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
+    private var dragDownX = 0f
+    private var dragDownY = 0f
+    /** Fraction of finger movement applied while dragging; below 1 gives fine positioning (keyframe editing). */
+    var dragPrecision = 1f
 
     private val guidelinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#CEC0EC")
@@ -404,6 +408,8 @@ class DraggableTextOverlayView @JvmOverloads constructor(
 
                 isDragging = true
                 dragOffsetX = touchX - editText.x
+                dragDownX = touchX
+                dragDownY = touchY
                 dragOffsetY = touchY - editText.y
                 return true
             }
@@ -426,14 +432,16 @@ class DraggableTextOverlayView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 isDragging = true
                 dragOffsetX = event.x - editText.x
+                dragDownX = event.x
+                dragDownY = event.y
                 dragOffsetY = event.y - editText.y
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (isDragging) {
                     val videoRect = getVideoRect()
-                    val centerX = event.x - dragOffsetX + editText.width / 2f
-                    val centerY = event.y - dragOffsetY + editText.height / 2f
+                    val centerX = dragDownX + (event.x - dragDownX) * dragPrecision - dragOffsetX + editText.width / 2f
+                    val centerY = dragDownY + (event.y - dragDownY) * dragPrecision - dragOffsetY + editText.height / 2f
 
                     val constrainedCenterX = centerX.coerceIn(videoRect.left, videoRect.right)
                     val constrainedCenterY = centerY.coerceIn(videoRect.top, videoRect.bottom)

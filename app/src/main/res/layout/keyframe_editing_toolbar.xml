@@ -49,6 +49,17 @@
                 app:iconGravity="textEnd"
                 app:iconTint="@color/textColor"/>
 
+            <ImageButton
+                android:id="@+id/btnKeyframePrev"
+                android:layout_width="36dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_media_previous"
+                android:contentDescription="Previous keyframe"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                app:tint="@color/activeTool" />
+
             <!-- Add/Remove Keyframe Button -->
             <ImageButton
                 android:id="@+id/btnKeyframeAction"
@@ -57,6 +68,17 @@
                 android:layout_marginEnd="4dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@drawable/ic_keyframe_add"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                app:tint="@color/activeTool" />
+
+            <ImageButton
+                android:id="@+id/btnKeyframeNext"
+                android:layout_width="36dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_media_next"
+                android:contentDescription="Next keyframe"
                 android:padding="8dp"
                 android:scaleType="fitCenter"
                 app:tint="@color/activeTool" />
@@ -185,6 +207,9 @@
 
                 <TextView
                     android:id="@+id/tvSliderValue"
+                    android:background="?attr/selectableItemBackground"
+                    android:contentDescription="Tap to type an exact value"
+                    android:paddingHorizontal="6dp"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_alignParentEnd="true"
@@ -194,9 +219,29 @@
                     android:fontFamily="sans-serif-medium" />
             </RelativeLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnKeyframeMinus"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="−"
+                android:textSize="20sp"
+                android:contentDescription="Decrease value" />
+
             <com.google.android.material.slider.Slider
                 android:id="@+id/sliderKeyframeValue"
-                android:layout_width="match_parent"
+                android:layout_width="0dp"
+                android:layout_weight="1"
                 android:layout_height="wrap_content"
                 android:valueFrom="0.0"
                 android:valueTo="100.0"
@@ -204,6 +249,83 @@
                 app:haloColor="@color/activeTool"
                 app:thumbColor="@color/activeTool"
                 app:trackColorActive="@color/activeTool" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnKeyframePlus"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="+"
+                android:textSize="20sp"
+                android:contentDescription="Increase value" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Fine position nudge (Position properties): tap = 0.1% of the frame, long-press = 1% -->
+        <LinearLayout
+            android:id="@+id/layoutKeyframeNudge"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginTop="4dp"
+            android:visibility="gone">
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeLeft"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="←"
+                android:textSize="18sp"
+                android:contentDescription="Move left" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeUp"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="↑"
+                android:textSize="18sp"
+                android:contentDescription="Move up" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeDown"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="↓"
+                android:textSize="18sp"
+                android:contentDescription="Move down" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeRight"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="→"
+                android:textSize="18sp"
+                android:contentDescription="Move right" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

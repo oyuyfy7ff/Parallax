@@ -46,7 +46,9 @@ class KeyframeGraphView @JvmOverloads constructor(
     // Curve space shown: x 0..1, y -0.6..1.6 so overshoot/anticipation curves stay visible.
     private val yMin = -0.6f
     private val yMax = 1.6f
-    private val precision = 0.5f // handle moves half as far as the finger
+    private val precision = 0.25f // handle moves a quarter as far as the finger
+    private var downX = 0f
+    private var downY = 0f
 
     private val d = resources.displayMetrics.density
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -144,9 +146,11 @@ class KeyframeGraphView @JvmOverloads constructor(
                 dragging = when {
                     d0 <= reach && d0 <= d1 -> 0
                     d1 <= reach -> 1
-                    else -> -1
+                    else -> TAP
                 }
-                if (dragging == -1) return false
+                downX = event.x
+                downY = event.y
+                if (dragging == TAP) return true
                 lastX = event.x
                 lastY = event.y
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -156,6 +160,7 @@ class KeyframeGraphView @JvmOverloads constructor(
             }
             MotionEvent.ACTION_MOVE -> {
                 if (dragging == -1) return false
+                if (dragging == TAP) return true
                 val dx = (event.x - lastX) / (width - 2 * padH) * precision
                 val dy = -(event.y - lastY) / (height - 2 * padV) * (yMax - yMin) * precision
                 lastX = event.x
@@ -169,6 +174,15 @@ class KeyframeGraphView @JvmOverloads constructor(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 if (dragging == -1) return false
+                if (dragging == TAP) {
+                    dragging = -1
+                    val slop = android.view.ViewConfiguration.get(context).scaledTouchSlop
+                    if (event.actionMasked == MotionEvent.ACTION_UP && hypot(event.x - downX, event.y - downY) < slop) {
+                        performClick()
+                        showNumberEditor(h)
+                    }
+                    return true
+                }
                 dragging = -1
                 parent?.requestDisallowInterceptTouchEvent(false)
                 val type = bezierEasing(h[0], h[1], h[2], h[3])
@@ -188,6 +202,38 @@ class KeyframeGraphView @JvmOverloads constructor(
         easingType = type
         handles = h
         invalidate()
+    }
+
+    /** Type exact handle values (x 0..1, y -0.6..1.6), like CSS cubic-bezier(). */
+    private fun showNumberEditor(h: FloatArray) {
+        val labels = listOf("Handle 1 time (x)", "Handle 1 value (y)", "Handle 2 time (x)", "Handle 2 value (y)")
+        val inputs = labels.mapIndexed { i, label ->
+            com.google.android.material.textfield.TextInputEditText(context).apply {
+                hint = label
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+                setText(String.format(java.util.Locale.US, "%.3f", h[i]))
+                setSelectAllOnFocus(true)
+            }
+        }
+        val pad = (20 * d).toInt()
+        val form = android.widget.LinearLayout(context).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            inputs.forEach { addView(it) }
+        }
+        com.google.android.material.dialog.MaterialAlertDialogBuilder(context)
+            .setTitle("Easing curve")
+            .setView(form)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Set") { _, _ ->
+                val v = inputs.mapIndexed { i, e -> e.text?.toString()?.replace(',', '.')?.toFloatOrNull()?.takeIf { it.isFinite() } ?: h[i] }
+                applyPreset(bezierEasing(v[0].coerceIn(0f, 1f), v[1].coerceIn(yMin, yMax), v[2].coerceIn(0f, 1f), v[3].coerceIn(yMin, yMax)))
+            }
+            .show()
+    }
+
+    private companion object {
+        const val TAP = -2
     }
 
     override fun performClick(): Boolean {
