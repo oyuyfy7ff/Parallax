@@ -46,21 +46,25 @@ object ClipEffects {
     /** Parse an imported effect file. Returns null when it is not a usable effect. */
     fun fromJson(json: String): ClipEffect? {
         val parsed = try { gson.fromJson(json, ClipEffect::class.java) } catch (e: Exception) { null } ?: return null
-        val e = parsed.effect ?: return null
-        // Untrusted file: drop broken keyframes and cap the size so a bad file cannot stall preview/export.
-        fun clean(keys: List<KeyframePoint>?) = keys.orEmpty()
-            .filter { it.timeMs in 0..600_000L && it.valueX.isFinite() && it.valueY.isFinite() }
-            .take(500)
+        // Gson ignores Kotlin nullability, so read every field of this untrusted file as nullable.
+        val e = (parsed.effect as ClipTransform?) ?: return null
+        // Drop broken keyframes, rebuild them with real defaults, and cap the size so a bad file cannot stall preview/export.
+        fun clean(keys: List<KeyframePoint>?, lo: Float, hi: Float): List<KeyframePoint> =
+            (keys as List<KeyframePoint?>?).orEmpty().filterNotNull()
+                .filter { it.timeMs in 0..600_000L && it.valueX.isFinite() && it.valueY.isFinite() }
+                .take(500)
+                .map { KeyframePoint(it.timeMs, it.valueX.coerceIn(lo, hi), it.valueY.coerceIn(-2f, 2f), (it.interpolationType as String?) ?: "linear") }
         val cleaned = ClipTransform(
-            positionKeyframes = clean(e.positionKeyframes).map { it.copy(valueX = it.valueX.coerceIn(-2f, 2f), valueY = it.valueY.coerceIn(-2f, 2f)) },
-            scaleKeyframes = clean(e.scaleKeyframes).map { it.copy(valueX = it.valueX.coerceIn(0.01f, 10f)) },
-            rotationKeyframes = clean(e.rotationKeyframes).map { it.copy(valueX = it.valueX.coerceIn(-3600f, 3600f)) },
-            opacityKeyframes = clean(e.opacityKeyframes).map { it.copy(valueX = it.valueX.coerceIn(0f, 1f)) },
-            tiltXKeyframes = clean(e.tiltXKeyframes).map { it.copy(valueX = it.valueX.coerceIn(-89f, 89f)) },
-            tiltYKeyframes = clean(e.tiltYKeyframes).map { it.copy(valueX = it.valueX.coerceIn(-89f, 89f)) }
+            positionKeyframes = clean(e.positionKeyframes, -2f, 2f),
+            scaleKeyframes = clean(e.scaleKeyframes, 0.01f, 10f),
+            rotationKeyframes = clean(e.rotationKeyframes, -3600f, 3600f),
+            opacityKeyframes = clean(e.opacityKeyframes, 0f, 1f),
+            tiltXKeyframes = clean(e.tiltXKeyframes, -89f, 89f),
+            tiltYKeyframes = clean(e.tiltYKeyframes, -89f, 89f)
         )
         if (cleaned.isIdentity) return null
-        return ClipEffect(parsed.name?.take(60)?.ifBlank { null } ?: "Imported effect", cleaned)
+        val name = (parsed.name as String?)?.take(60)?.ifBlank { null } ?: "Imported effect"
+        return ClipEffect(name, cleaned)
     }
 
     /** Keyframes of [t] that start at [atMs], replacing [t]'s keyframes inside the effect's time span. */

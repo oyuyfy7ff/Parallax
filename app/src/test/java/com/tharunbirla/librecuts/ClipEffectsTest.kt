@@ -38,6 +38,8 @@ class ClipEffectsTest {
         assertEquals("Imported effect", e.name)
         assertEquals(1f, e.effect.opacityKeyframes[0].valueX, 0f)
         assertEquals(89f, e.effect.tiltXKeyframes[0].valueX, 0f)
+        assertEquals("linear", e.effect.opacityKeyframes[0].interpolationType)
+        assertNotNull(ClipEffects.fromJson("""{"effect":{"scaleKeyframes":[null,{"timeMs":0,"valueX":2}]}}"""))
     }
 
     @Test
