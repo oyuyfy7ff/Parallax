@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.tharunbirla.librecuts.utils.escapeDrawtext
 import com.tharunbirla.librecuts.models.EditOperation
 import com.tharunbirla.librecuts.models.EditRecipe
 import com.tharunbirla.librecuts.models.TextPosition
@@ -191,10 +192,7 @@ class VideoEditingViewModel : ViewModel() {
 
     /** Build a drawtext filter expression for a text operation. */
     private fun buildDrawtextExpr(op: EditOperation.AddText, fontFilePath: String?, allOps: List<EditOperation> = emptyList()): String {
-        val escapedText = op.text
-            .replace("\\", "\\\\")
-            .replace("'", "\\\\'")
-            .replace(":", "\\:")
+        val escapedText = escapeDrawtext(op.text)
 
         val fontToUse = op.fontPath ?: fontFilePath
         val fontPart = if (!fontToUse.isNullOrBlank()) {
@@ -233,7 +231,12 @@ class VideoEditingViewModel : ViewModel() {
         val alignPart = if (op.textAlign.isNotEmpty()) ":text_align=${op.textAlign}" else ""
         val lineSpacingPart = if (op.lineSpacing != 0f) ":line_spacing=${op.lineSpacing.toInt()}" else ""
         
-        return "drawtext=${fontPart}text='$escapedText':fontcolor='${formatColorForFFmpeg(op.color)}':fontsize=${op.fontSize}:$positionPart$enablePart$alphaPart$borderPart$alignPart$lineSpacingPart"
+        val fontSizePart = if (op.scaleKeyframes.isNotEmpty()) {
+            "'max(1\\,${op.fontSize}*(${buildFFmpegInterpolationExpr(op.scaleKeyframes, useValueY = false, defaultValue = 1f, startTimeMs = op.startTimeMs ?: 0L)}))'"
+        } else {
+            "${op.fontSize}"
+        }
+        return "drawtext=${fontPart}text=$escapedText:expansion=none:fontcolor='${formatColorForFFmpeg(op.color)}':fontsize=$fontSizePart:$positionPart$enablePart$alphaPart$borderPart$alignPart$lineSpacingPart"
     }
 
     private fun buildFFmpegMaskAlphaExpr(
@@ -295,7 +298,7 @@ class VideoEditingViewModel : ViewModel() {
         timeVar: String = "t"
     ): String {
         if (keyframes.isEmpty()) return defaultValue.toString()
-        val sorted = keyframes.sortedBy { it.timeMs }
+        val sorted = com.tharunbirla.librecuts.models.expandCurvedKeyframes(keyframes.sortedBy { it.timeMs })
         val startSec = startTimeMs / 1000.0
         val tRel = "($timeVar-$startSec)"
         
@@ -340,6 +343,57 @@ class VideoEditingViewModel : ViewModel() {
         expr = "if(lt($tRel\\, $firstTime)\\, $firstVal\\, $expr)"
         
         return expr
+    }
+
+    /**
+     * Filter chain for a clip stream plus overlay x/y that apply a main-clip transform the way
+     * applyClipTransformPreview does: rotate and scale about the clip center, offset as a fraction
+     * of the canvas, opacity. Keyframe times are clip-relative. Null when there is nothing to do.
+     */
+    private fun buildClipTransformFilters(tr: EditOperation.ClipTransform?, canvasMaxPx: Int): Pair<String, String>? {
+        if (tr == null || tr.isIdentity) return null
+        fun kf(keys: List<EditOperation.KeyframePoint>, useY: Boolean, default: Float, timeVar: String = "t") =
+            if (keys.isEmpty()) default.toString() else buildFFmpegInterpolationExpr(keys, useY, default, 0L, timeVar)
+        val chain = mutableListOf("format=rgba")
+        if (tr.rotation != 0f || tr.rotationKeyframes.isNotEmpty()) {
+            chain.add("rotate=a='(${kf(tr.rotationKeyframes, false, tr.rotation)})*PI/180':c=black@0:ow='hypot(iw\\,ih)':oh=ow")
+        }
+        if (tr.opacityKeyframes.isNotEmpty()) {
+            // geq only has T for time; it is slow, so only when opacity is animated.
+            chain.add("geq=r='r(X\\,Y)':g='g(X\\,Y)':b='b(X\\,Y)':a='alpha(X\\,Y)*clip(${kf(tr.opacityKeyframes, false, tr.opacity, "T")}\\,0\\,1)'")
+        } else if (tr.opacity < 1f) {
+            chain.add("colorchannelmixer=aa=${tr.opacity.coerceIn(0f, 1f)}")
+        }
+        if (tr.tiltX != 0f || tr.tiltY != 0f || tr.tiltXKeyframes.isNotEmpty() || tr.tiltYKeyframes.isNotEmpty()) {
+            // perspective has no t, so pin 30 fps and use frame count; it also needs a planar alpha format.
+            val tv = "(in/30)"
+            // View.rotationX/Y turn the opposite way to a right-handed rotation in screen coordinates.
+            val a = "(-(${kf(tr.tiltXKeyframes, false, tr.tiltX, tv)})*PI/180)"
+            val b = "(-(${kf(tr.tiltYKeyframes, false, tr.tiltY, tv)})*PI/180)"
+            // Preview scales before projecting with a fixed camera; scale comes later here, so shrink the camera distance instead.
+            val d = "(${2.5f * canvasMaxPx}/max(0.01\\,${kf(tr.scaleKeyframes, false, tr.scale, tv)}))"
+            fun corner(sx: Int, sy: Int): Pair<String, String> {
+                val x0 = "($sx*W/2)"
+                val y0 = "($sy*H/2)"
+                val z1 = "(-$x0*sin($b))"
+                val x1 = "($x0*cos($b))"
+                val y2 = "($y0*cos($a)-$z1*sin($a))"
+                val z2 = "($y0*sin($a)+$z1*cos($a))"
+                val k = "($d/($d+$z2))"
+                return Pair("W/2+$x1*$k", "H/2+$y2*$k")
+            }
+            val pts = listOf(corner(-1, -1), corner(1, -1), corner(-1, 1), corner(1, 1))
+            val opts = pts.withIndex().joinToString(":") { (i, p) -> "x$i='${p.first}':y$i='${p.second}'" }
+            chain.add("fps=30,format=yuva444p,pad=w='trunc(iw*1.5/2)*2':h='trunc(ih*1.5/2)*2':x=(ow-iw)/2:y=(oh-ih)/2:color=black@0")
+            chain.add("perspective=$opts:sense=destination:eval=frame")
+        }
+        if (tr.scale != 1f || tr.scaleKeyframes.isNotEmpty()) {
+            val sc = "max(0.01\\,${kf(tr.scaleKeyframes, false, tr.scale)})"
+            chain.add("scale=w='max(2\\,trunc(iw*$sc/2)*2)':h='max(2\\,trunc(ih*$sc/2)*2)':eval=frame")
+        }
+        val x = kf(tr.positionKeyframes, false, tr.offsetX)
+        val y = kf(tr.positionKeyframes, true, tr.offsetY)
+        return Pair(chain.joinToString(","), "x='(W-w)/2+($x)*W':y='(H-h)/2+($y)*H':eval=frame")
     }
 
     private fun formatColorForFFmpeg(colorHex: String): String {
@@ -492,7 +546,7 @@ class VideoEditingViewModel : ViewModel() {
                             val rgbaImgLabel = "[rgba_img_$stageIndex]"
                             val mirrorStr = if (op.isMirrored) ",hflip" else ""
                             val hasMaskKeyframes = op.maskConfig.positionKeyframes.isNotEmpty() || op.maskConfig.sizeKeyframes.isNotEmpty() || op.maskConfig.rotationKeyframes.isNotEmpty() || op.maskConfig.featherKeyframes.isNotEmpty()
-                            if (op.opacityKeyframes.isNotEmpty() || hasMaskKeyframes) {
+                            if (op.opacityKeyframes.isNotEmpty() || hasMaskKeyframes || op.scaleKeyframes.isNotEmpty() || op.rotationKeyframes.isNotEmpty()) {
                                 // Static image: convert to video stream so geq's T variable advances
                                 stages.add("[$imageInputIndex:v]format=rgba$mirrorStr,loop=loop=-1:size=1:start=0,fps=25$rgbaImgLabel")
                             } else {
@@ -549,12 +603,24 @@ class VideoEditingViewModel : ViewModel() {
                             currentOverlayLabel = maskLabel
                         }
 
-                        // Rotate image/video overlay (c=none preserves transparent background, ow/oh prevent cropping)
-                        stages.add("${currentOverlayLabel}rotate=$radians:c=none:ow='rotw($radians)':oh='roth($radians)'${rotatedImgLabel}")
+                        // Rotate first: rotate sizes its output once, while scale with eval=frame changes size per frame.
+                        val rotOutLabel = if (op.scaleKeyframes.isNotEmpty()) "[kfrot_$stageIndex]" else rotatedImgLabel
+                        if (op.rotationKeyframes.isNotEmpty()) {
+                            // Animated angle: fixed square output so the frame size never changes; transparent fill.
+                            val rotExpr = buildFFmpegInterpolationExpr(op.rotationKeyframes, useValueY = false, defaultValue = op.rotationAngle, startTimeMs = overlayStartMs)
+                            stages.add("${currentOverlayLabel}format=rgba,rotate=a='($rotExpr)*PI/180':c=black@0:ow='hypot(iw\\,ih)':oh=ow$rotOutLabel")
+                        } else {
+                            // Rotate image/video overlay (c=none preserves transparent background, ow/oh prevent cropping)
+                            stages.add("${currentOverlayLabel}rotate=$radians:c=none:ow='rotw($radians)':oh='roth($radians)'$rotOutLabel")
+                        }
+                        if (op.scaleKeyframes.isNotEmpty()) {
+                            val sc = "max(0.01\\,${buildFFmpegInterpolationExpr(op.scaleKeyframes, useValueY = false, defaultValue = 1f, startTimeMs = overlayStartMs)})"
+                            stages.add("${rotOutLabel}scale=w='max(2\\,trunc(iw*$sc/2)*2)':h='max(2\\,trunc(ih*$sc/2)*2)':eval=frame$rotatedImgLabel")
+                        }
                         // Overlay image/video on the reference video
                         val enablePart = buildEnableExpr(op.startTimeMs, op.endTimeMs)
                         val hasMaskKfs = op.maskConfig.positionKeyframes.isNotEmpty() || op.maskConfig.sizeKeyframes.isNotEmpty() || op.maskConfig.rotationKeyframes.isNotEmpty() || op.maskConfig.featherKeyframes.isNotEmpty()
-                        val shortestPart = if (((isGif || isVideo) && op.isLooping) || (!isGif && !isVideo && (op.opacityKeyframes.isNotEmpty() || hasMaskKfs))) ":shortest=1" else ""
+                        val shortestPart = if (((isGif || isVideo) && op.isLooping) || (!isGif && !isVideo && (op.opacityKeyframes.isNotEmpty() || hasMaskKfs || op.scaleKeyframes.isNotEmpty() || op.rotationKeyframes.isNotEmpty()))) ":shortest=1" else ""
                         
                         val overlayX = if (op.positionKeyframes.isNotEmpty()) {
                             val xExpr = buildFFmpegInterpolationExpr(op.positionKeyframes, useValueY = false, defaultValue = op.relativeX, startTimeMs = op.startTimeMs ?: 0L)
@@ -600,10 +666,7 @@ class VideoEditingViewModel : ViewModel() {
                         }
 
                         for ((lineIdx, lineText) in lines.withIndex()) {
-                            val escapedLine = lineText
-                                .replace("\\", "\\\\")
-                                .replace("'", "\\\\'")
-                                .replace(":", "\\:")
+                            val escapedLine = escapeDrawtext(lineText)
 
                             val lineOffset = lineIdx * lineSpacing
 
@@ -625,7 +688,7 @@ class VideoEditingViewModel : ViewModel() {
                             }
 
                             val boxPart = ":box=1:boxcolor='0x00000080':boxborderw=$boxBorderW"
-                            val filterExpr = "drawtext=${fontPart}text='$escapedLine':fontcolor='white':fontsize=${scaledFontSize}:${posPart}${boxPart}$enablePart"
+                            val filterExpr = "drawtext=${fontPart}text=$escapedLine:expansion=none:fontcolor='white':fontsize=${scaledFontSize}:${posPart}${boxPart}$enablePart"
                             
                             val nextLabel = "[v$stageIndex]"
                             stages.add("$currentLabel$filterExpr$nextLabel")
@@ -1010,6 +1073,18 @@ class VideoEditingViewModel : ViewModel() {
                     mergeOp?.items?.getOrNull(i - 1)?.maskConfig ?: EditOperation.MaskConfig()
                 }
                 
+                val clipTransform = buildClipTransformFilters(
+                    if (i == 0) operations.filterIsInstance<EditOperation.TransformMain>().lastOrNull()?.transform
+                    else mergeOp?.items?.getOrNull(i - 1)?.transform,
+                    maxOf(mainWidth, mainHeight)
+                )
+                // Overlay of the fitted clip on its canvas, through the clip transform when there is one.
+                fun overlayFg(): String {
+                    if (clipTransform == null) return "[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2"
+                    filterParts.add("[fg$i]${clipTransform.first}[fgt$i]")
+                    return "[bg$i][fgt$i]overlay=${clipTransform.second}"
+                }
+
                 // 1. Prepare raw video with basic visual filters
                 var preFilters = "setpts=PTS-STARTPTS"
                 if (lutFilterExpr != null) preFilters += ",$lutFilterExpr"
@@ -1049,14 +1124,14 @@ class VideoEditingViewModel : ViewModel() {
                     filterParts.add("[pre$i]split=2[bg_orig$i][fg_orig$i]")
                     filterParts.add("[bg_orig$i]$bgScale[bg$i]")
                     filterParts.add("[fg_orig$i]$fgScale[fg$i]")
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,format=yuv420p[norm$i]")
+                    filterParts.add("${overlayFg()},setsar=1,fps=30,format=yuv420p[norm$i]")
                 } else if (bgOp?.type == EditOperation.CanvasBackground.BackgroundType.IMAGE && bgImageIndex != -1) {
                     val bgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=increase,crop=$mainWidth:$mainHeight"
                     val fgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease"
                     filterParts.add("[$bgImageIndex:v]$bgScale[bg$i]")
                     filterParts.add("[pre$i]$fgScale[fg$i]")
                     // Use shortest=1 in case the loop goes on forever, but we specified -loop 1 which creates an infinite stream for image
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
+                    filterParts.add("${overlayFg()}:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
                 } else {
                     // Default COLOR
                     val color = bgOp?.colorHex ?: "black"
@@ -1064,7 +1139,7 @@ class VideoEditingViewModel : ViewModel() {
                     // Create a solid color background of mainWidth x mainHeight
                     filterParts.add("color=c=$padColor:s=${mainWidth}x${mainHeight}:r=30[bg$i]")
                     filterParts.add("[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]")
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
+                    filterParts.add("${overlayFg()}:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
                 }
 
                 val isClipMuted = operations.filterIsInstance<EditOperation.MuteClip>().find { it.index == i }?.isMuted ?: false
@@ -1424,6 +1499,15 @@ class VideoEditingViewModel : ViewModel() {
             currentInputVideoLabel = "[cfv]"
         }
 
+        val clipTransform = buildClipTransformFilters(operations.filterIsInstance<EditOperation.TransformMain>().lastOrNull()?.transform, maxOf(sourceVideoWidth, sourceVideoHeight))
+        if (clipTransform != null) {
+            filterComplexParts.add("${currentInputVideoLabel}split=2[ct_base_in][ct_fg_in]")
+            filterComplexParts.add("[ct_base_in]drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill[ct_base]")
+            filterComplexParts.add("[ct_fg_in]${clipTransform.first}[ct_fg]")
+            filterComplexParts.add("[ct_base][ct_fg]overlay=${clipTransform.second}[ct_v]")
+            currentInputVideoLabel = "[ct_v]"
+        }
+
         // ── Video filter stages (crop, text, image overlays) ──
         val (videoStages, finalVideoLabel) = buildVideoFilterStages(
             operations = videoOps,
@@ -1545,7 +1629,7 @@ class VideoEditingViewModel : ViewModel() {
         }
 
         // ── Assemble the command ──
-        val hasVideoFilters = videoStages.isNotEmpty() || prepFilters.isNotEmpty()
+        val hasVideoFilters = videoStages.isNotEmpty() || prepFilters.isNotEmpty() || clipTransform != null
         val hasAudioFilters = finalAudioLabel != null
 
         if (hasVideoFilters || hasAudioFilters) {

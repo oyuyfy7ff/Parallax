@@ -525,6 +525,96 @@ class VideoEditingActivity : AppCompatActivity() {
             }
         }
     }
+    private var pendingEffectExport: com.tharunbirla.librecuts.models.ClipEffect? = null
+
+    private val importEffectLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        val json = try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                // Effect files are tiny; refuse anything over 1 MB instead of loading it.
+                val bytes = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(8192)
+                while (bytes.size() <= 1_000_000) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    bytes.write(buf, 0, n)
+                }
+                if (bytes.size() > 1_000_000) null else bytes.toString("UTF-8")
+            }
+        } catch (e: Exception) { null }
+        val effect = json?.let { com.tharunbirla.librecuts.models.ClipEffects.fromJson(it) }
+        if (effect == null) {
+            Toast.makeText(this, "Not a valid LibreCuts effect file", Toast.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+        try {
+            java.io.File(effectsDir(), "${System.currentTimeMillis()}.json").writeText(com.tharunbirla.librecuts.models.ClipEffects.toJson(effect))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not save effect: ${e.message}", Toast.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+        Toast.makeText(this, "Effect '${effect.name}' imported", Toast.LENGTH_SHORT).show()
+        applyClipEffect(effect)
+    }
+
+    private val exportEffectLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        val effect = pendingEffectExport
+        pendingEffectExport = null
+        if (uri == null || effect == null) return@registerForActivityResult
+        try {
+            contentResolver.openOutputStream(uri, "wt")?.use { it.write(com.tharunbirla.librecuts.models.ClipEffects.toJson(effect).toByteArray()) }
+            Toast.makeText(this, "Effect saved", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not save effect: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun effectsDir(): java.io.File = java.io.File(filesDir, "effects").apply { mkdirs() }
+
+    private fun importedClipEffects(): List<com.tharunbirla.librecuts.models.ClipEffect> =
+        effectsDir().listFiles { f -> f.extension == "json" }.orEmpty().sortedBy { it.name }
+            .mapNotNull { f -> try { com.tharunbirla.librecuts.models.ClipEffects.fromJson(f.readText()) } catch (e: Exception) { null } }
+
+    /** Effects menu for the selected clip: built-ins, imported effects, import a file, share the current keyframes. */
+    private fun showClipEffectsDialog() {
+        val effects = com.tharunbirla.librecuts.models.ClipEffects.builtIn + importedClipEffects()
+        val labels = effects.map { it.name } + listOf("Import effect file…", "Save clip keyframes as effect…")
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Effects")
+            .setItems(labels.toTypedArray()) { _, which ->
+                when {
+                    which < effects.size -> applyClipEffect(effects[which])
+                    which == effects.size -> importEffectLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
+                    else -> {
+                        val t = mainClipContext(getGlobalPosition())?.second
+                        val effect = t?.let { com.tharunbirla.librecuts.models.ClipEffects.fromClip("My effect", it) }
+                        if (effect == null) {
+                            Toast.makeText(this, "This clip has no keyframes to save", Toast.LENGTH_SHORT).show()
+                        } else {
+                            pendingEffectExport = effect
+                            exportEffectLauncher.launch("effect.json")
+                        }
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun applyClipEffect(effect: com.tharunbirla.librecuts.models.ClipEffect) {
+        val g = getGlobalPosition()
+        val (idx, t, rel) = mainClipContext(g) ?: run {
+            Toast.makeText(this, "Select a clip first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        commitMainClipTransform(idx, com.tharunbirla.librecuts.models.ClipEffects.apply(t, effect.effect, rel), rel)
+        updateKeyframeActionButtonState(g)
+        Toast.makeText(this, "${effect.name} added", Toast.LENGTH_SHORT).show()
+    }
+
     private var photoSequencePreviewImageView: ImageView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -923,7 +1013,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 val start = op.startTimeMs ?: 0L
                                 val relativeTimeMs = globalTimeMs - start
                                 val currentList = op.positionKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150 }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, rx, ry)
                                 if (existingIndex != -1) {
                                     currentList[existingIndex] = newPoint
@@ -946,7 +1036,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 val start = op.startTimeMs ?: 0L
                                 val relativeTimeMs = globalTimeMs - start
                                 val currentList = op.positionKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150 }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, relX, relY)
                                 if (existingIndex != -1) {
                                     currentList[existingIndex] = newPoint
@@ -1140,7 +1230,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 val start = op.startTimeMs ?: 0L
                                 val relativeTimeMs = globalTimeMs - start
                                 val currentList = op.positionKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150 }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, rx, ry)
                                 if (existingIndex != -1) {
                                     currentList[existingIndex] = newPoint
@@ -1163,7 +1253,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 val start = op.startTimeMs ?: 0L
                                 val relativeTimeMs = globalTimeMs - start
                                 val currentList = op.positionKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150 }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, relX, relY)
                                 if (existingIndex != -1) {
                                     currentList[existingIndex] = newPoint
@@ -1222,7 +1312,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 var mc = newMaskConfig
                                 if (activeKeyframeProperty == "Mask Position" || mc.positionKeyframes.isNotEmpty()) {
                                     val currentList = mc.positionKeyframes.toMutableList()
-                                    val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                                    val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                     val newPoint = EditOperation.KeyframePoint(relativeTimeMs, mc.relativeX, mc.relativeY)
                                     if (existingIndex != -1) {
                                         currentList[existingIndex] = newPoint
@@ -1256,7 +1346,7 @@ class VideoEditingActivity : AppCompatActivity() {
                             var mc = maskConfig
                             if (activeKeyframeProperty == "Mask Position" || mc.positionKeyframes.isNotEmpty()) {
                                 val currentList = mc.positionKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, mc.relativeX, mc.relativeY)
                                 if (existingIndex != -1) {
                                     currentList[existingIndex] = newPoint
@@ -1480,6 +1570,9 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
                 toolbar.findViewById<ImageButton>(R.id.btnVideoKeyframe)?.setBounceClickListener {
                     enterMainClipKeyframeMode()
+                }
+                toolbar.findViewById<ImageButton>(R.id.btnVideoEffects)?.setBounceClickListener {
+                    showClipEffectsDialog()
                 }
                 toolbar.findViewById<ImageButton>(R.id.btnVideoAdjust)?.setBounceClickListener {
                     selectedVideoIndex?.let { index ->
@@ -1762,6 +1855,12 @@ class VideoEditingActivity : AppCompatActivity() {
                 toolbar.findViewById<Button>(R.id.btnUploadSrt)?.setBounceClickListener {
                     pickSrtFile()
                 }
+                toolbar.findViewById<Button>(R.id.btnAutoSubtitles)?.setBounceClickListener {
+                    autoGenerateSubtitles()
+                }
+                toolbar.findViewById<Button>(R.id.btnSubtitleApiSettings)?.setBounceClickListener {
+                    showTranscriptionSettings()
+                }
                 toolbar.findViewById<View>(R.id.btnChangeSrt)?.setBounceClickListener {
                     pickSrtFile()
                 }
@@ -1848,6 +1947,17 @@ class VideoEditingActivity : AppCompatActivity() {
                 toolbar.findViewById<com.google.android.material.slider.Slider>(R.id.sliderKeyframeValue)?.addOnChangeListener { _, value, fromUser ->
                     if (fromUser) {
                         handleKeyframeSliderChange(value)
+                    }
+                }
+                toolbar.findViewById<View>(R.id.btnKeyframePrev)?.setBounceClickListener { jumpToKeyframe(-1) }
+                toolbar.findViewById<View>(R.id.btnKeyframeNext)?.setBounceClickListener { jumpToKeyframe(1) }
+                toolbar.findViewById<View>(R.id.btnKeyframeMinus)?.setOnClickListener { stepKeyframeValue(-1) }
+                toolbar.findViewById<View>(R.id.btnKeyframePlus)?.setOnClickListener { stepKeyframeValue(1) }
+                toolbar.findViewById<View>(R.id.tvSliderValue)?.setOnClickListener { typeKeyframeValue() }
+                for ((id, dir) in listOf(R.id.btnNudgeLeft to Pair(-1, 0), R.id.btnNudgeRight to Pair(1, 0), R.id.btnNudgeUp to Pair(0, -1), R.id.btnNudgeDown to Pair(0, 1))) {
+                    toolbar.findViewById<View>(id)?.apply {
+                        setOnClickListener { nudgeKeyframePosition(dir.first * 0.001f, dir.second * 0.001f) }
+                        setOnLongClickListener { nudgeKeyframePosition(dir.first * 0.01f, dir.second * 0.01f); true }
                     }
                 }
             }
@@ -2369,6 +2479,8 @@ class VideoEditingActivity : AppCompatActivity() {
             c.scaleX = 1f
             c.scaleY = 1f
             c.rotation = 0f
+            c.rotationX = 0f
+            c.rotationY = 0f
             c.alpha = 1f
             return
         }
@@ -2383,6 +2495,10 @@ class VideoEditingActivity : AppCompatActivity() {
         c.scaleX = z * sc
         c.scaleY = z * sc
         c.rotation = t?.rotationAt(relMs) ?: 0f
+        c.rotationX = t?.tiltXAt(relMs) ?: 0f
+        c.rotationY = t?.tiltYAt(relMs) ?: 0f
+        // Camera 2.5x the frame size away; export uses the same distance (camera units are 1/72 inch).
+        c.cameraDistance = 2.5f * maxOf(c.width, c.height) * resources.displayMetrics.densityDpi / 72f
         c.alpha = (t?.opacityAt(relMs) ?: 1f).coerceIn(0f, 1f)
     }
 
@@ -3203,6 +3319,136 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun updateSubtitleOp(newOp: EditOperation.AddSubtitles) {
         viewModel.updateOperation(newOp)
         textOverlayView?.subtitleOperation = newOp
+    }
+
+    /** Replace the project's subtitles track (there is only ever one). */
+    private fun setSubtitlesTrack(uri: Uri, content: String, name: String, cues: List<com.tharunbirla.librecuts.models.SubtitleCue>) {
+        viewModel.project.value?.operations?.filterIsInstance<EditOperation.AddSubtitles>()?.forEach { op ->
+            viewModel.deleteOperation(op.id)
+        }
+        viewModel.addOperation(EditOperation.AddSubtitles(subtitlesUri = uri, srtContent = content, fileName = name, cues = cues))
+        Toast.makeText(this, "Subtitles added: ${cues.size} captions", Toast.LENGTH_SHORT).show()
+        updateSubtitlesUi()
+        textOverlayView?.setSubtitleCues(cues)
+    }
+
+    // ---------- Automatic subtitles (speech-to-text API) ----------
+    private fun transcriptionPrefs() = getSharedPreferences("librecuts_transcription", Context.MODE_PRIVATE)
+
+    /** API settings; [onSaved] runs after a key is stored. The key stays on the device (excluded from backups). */
+    private fun showTranscriptionSettings(onSaved: (() -> Unit)? = null) {
+        val prefs = transcriptionPrefs()
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        fun input(hint: String, value: String?, password: Boolean = false) = com.google.android.material.textfield.TextInputEditText(this).apply {
+            this.hint = hint
+            setText(value ?: "")
+            isSingleLine = true
+            if (password) inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        val urlIn = input("API URL", prefs.getString("base_url", com.tharunbirla.librecuts.utils.Transcriber.DEFAULT_BASE_URL))
+        val keyIn = input("API key", prefs.getString("api_key", null), password = true)
+        val modelIn = input("Model", prefs.getString("model", com.tharunbirla.librecuts.utils.Transcriber.DEFAULT_MODEL))
+        val langIn = input("Language code, e.g. th or en (optional)", prefs.getString("language", null))
+        val note = TextView(this).apply {
+            text = "Audio is uploaded to this provider only when you tap Auto-generate. Works with OpenAI-compatible endpoints (OpenAI, Groq, self-hosted Whisper)."
+            textSize = 12f
+        }
+        val form = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            listOf(urlIn, keyIn, modelIn, langIn, note).forEach { addView(it) }
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Speech-to-text API")
+            .setView(form)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Remove key") { _, _ ->
+                prefs.edit().remove("api_key").apply()
+                Toast.makeText(this, "API key removed", Toast.LENGTH_SHORT).show()
+            }
+            .setPositiveButton("Save") { _, _ ->
+                val url = urlIn.text?.toString()?.trim().orEmpty()
+                try {
+                    com.tharunbirla.librecuts.utils.Transcriber.endpoint(url)
+                } catch (e: IllegalArgumentException) {
+                    Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
+                    return@setPositiveButton
+                }
+                val key = keyIn.text?.toString()?.trim().orEmpty()
+                prefs.edit()
+                    .putString("base_url", url)
+                    .putString("api_key", key)
+                    .putString("model", modelIn.text?.toString()?.trim().orEmpty())
+                    .putString("language", langIn.text?.toString()?.trim().orEmpty())
+                    .apply()
+                if (key.isNotEmpty()) onSaved?.invoke()
+            }
+            .show()
+    }
+
+    /** Export the project's audio mix, send it to the speech-to-text API, and add the result as the subtitles track. */
+    private fun autoGenerateSubtitles() {
+        val prefs = transcriptionPrefs()
+        val apiKey = prefs.getString("api_key", null)
+        if (apiKey.isNullOrBlank()) {
+            showTranscriptionSettings { autoGenerateSubtitles() }
+            return
+        }
+        if (!::tempInputFile.isInitialized) {
+            Toast.makeText(this, "No video loaded", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val baseUrl = prefs.getString("base_url", null) ?: com.tharunbirla.librecuts.utils.Transcriber.DEFAULT_BASE_URL
+        val model = prefs.getString("model", null).orEmpty()
+        val language = prefs.getString("language", null)
+        val progress = MaterialAlertDialogBuilder(this)
+            .setTitle("Generating subtitles")
+            .setMessage("Preparing audio and transcribing… this can take a minute.")
+            .setCancelable(false)
+            .show()
+        lifecycleScope.launch {
+            val audio = File(cacheDir, "transcribe_${System.currentTimeMillis()}.mp3")
+            try {
+                // Same audio mix as "Export audio", so caption times follow the edited timeline; small mono MP3 to stay under upload limits.
+                val prev = Triple(viewModel.exportResolution.value, viewModel.exportFps.value, viewModel.exportAudioOnly.value)
+                viewModel.setExportSettings(prev.first, prev.second, true)
+                val built = try {
+                    viewModel.buildConsolidatedFFmpegCommand(tempInputFile.absolutePath, audio.absolutePath, fontFilePath, this@VideoEditingActivity)
+                } finally {
+                    viewModel.setExportSettings(prev.first, prev.second, prev.third)
+                }
+                val small = "-c:a libmp3lame -ac 1 -ar 16000 -b:a 32k"
+                val cmd = if (built == null || built.contains(" -c copy ")) {
+                    "-y -i \"${tempInputFile.absolutePath}\" -vn $small \"${audio.absolutePath}\""
+                } else {
+                    built.replace("-c:a libmp3lame -b:a 192k", small)
+                }
+                val result = ffmpegEngine.executeCommand(cmd)
+                if (result !is FFmpegRenderEngine.RenderResult.Success || !audio.exists() || audio.length() == 0L) {
+                    throw java.io.IOException("This project has no audio to transcribe")
+                }
+                val srt = withContext(Dispatchers.IO) {
+                    com.tharunbirla.librecuts.utils.Transcriber.transcribeToSrt(audio, baseUrl, apiKey, model, language)
+                }
+                val cues = com.tharunbirla.librecuts.utils.SubtitleParser.parse(srt)
+                if (cues.isEmpty()) throw java.io.IOException("No speech was recognised")
+                val srtFile = withContext(Dispatchers.IO) {
+                    File(cacheDir, "subtitles_auto_${System.currentTimeMillis()}.srt").apply { writeText(srt) }
+                }
+                setSubtitlesTrack(Uri.fromFile(srtFile), srt, "Auto subtitles.srt", cues)
+            } catch (e: Exception) {
+                Log.w(TAG, "Auto subtitles failed: ${e.message}")
+                MaterialAlertDialogBuilder(this@VideoEditingActivity)
+                    .setTitle("Could not generate subtitles")
+                    .setMessage(e.message ?: e.javaClass.simpleName)
+                    .setPositiveButton("OK", null)
+                    .setNeutralButton("API settings") { _, _ -> showTranscriptionSettings() }
+                    .show()
+            } finally {
+                progress.dismiss()
+                withContext(Dispatchers.IO) { audio.delete() }
+            }
+        }
     }
 
     private fun pickSrtFile() {
@@ -4652,12 +4898,6 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                         }
                         if (cues.isNotEmpty()) {
-                            // First remove any existing subtitles operations so we only have one subtitles track
-                            val project = viewModel.project.value
-                            project?.operations?.filterIsInstance<EditOperation.AddSubtitles>()?.forEach { op ->
-                                viewModel.deleteOperation(op.id)
-                            }
-                            
                             val name = try {
                                 var displayName = "subtitles.srt"
                                 contentResolver.query(srtUri, null, null, null, null)?.use { cursor ->
@@ -4671,17 +4911,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 "subtitles.srt"
                             }
 
-                            viewModel.addOperation(
-                                EditOperation.AddSubtitles(
-                                    subtitlesUri = tempUri,
-                                    srtContent = content,
-                                    fileName = name,
-                                    cues = cues
-                                )
-                            )
-                            Toast.makeText(this@VideoEditingActivity, "Subtitles added: ${cues.size} captions", Toast.LENGTH_SHORT).show()
-                            updateSubtitlesUi()
-                            textOverlayView?.setSubtitleCues(cues)
+                            setSubtitlesTrack(tempUri, content, name, cues)
                         } else {
                             Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_parse_subtitle_file, Toast.LENGTH_LONG).show()
                         }
@@ -8557,7 +8787,7 @@ class VideoEditingActivity : AppCompatActivity() {
             // Auto-keyframe at the playhead.
             val rel = (getGlobalPosition() - (op.startTimeMs ?: 0L)).coerceAtLeast(0L)
             val list = op.positionKeyframes.toMutableList()
-            val idx = list.indexOfFirst { Math.abs(it.timeMs - rel) < 150L }
+            val idx = list.indexOfFirst { Math.abs(it.timeMs - rel) < KEYFRAME_SNAP_MS }
             if (idx != -1) {
                 list[idx] = list[idx].copy(valueX = x, valueY = y)
             } else {
@@ -8633,6 +8863,8 @@ class VideoEditingActivity : AppCompatActivity() {
         
         isKeyframeEditingMode = true
         activeKeyframeProperty = "Position"
+        draggableImageOverlay?.dragPrecision = FINE_DRAG
+        draggableTextOverlay?.dragPrecision = FINE_DRAG
         
         // Hide overlay editing toolbars
         imageEditingToolbar?.visibility = View.GONE
@@ -8659,6 +8891,8 @@ class VideoEditingActivity : AppCompatActivity() {
 
     private fun exitKeyframeEditingMode() {
         isKeyframeEditingMode = false
+        draggableImageOverlay?.dragPrecision = 1f
+        draggableTextOverlay?.dragPrecision = 1f
         keyframeEditingToolbar?.visibility = View.GONE
         nullHandleView?.visibility = View.GONE
         
@@ -8693,9 +8927,16 @@ class VideoEditingActivity : AppCompatActivity() {
         return Triple(idx, item.transform ?: EditOperation.ClipTransform(), (globalTimeMs - start).coerceAtLeast(0L))
     }
 
+    /** Remove the keyframe at [rel], or add one holding the current (eased) value. */
+    private fun toggleKey(list: List<EditOperation.KeyframePoint>, rel: Long, default: Float): List<EditOperation.KeyframePoint> {
+        val i = list.indexOfFirst { Math.abs(it.timeMs - rel) < KEYFRAME_SNAP_MS }
+        return if (i != -1) list.filterIndexed { j, _ -> j != i }
+        else list + EditOperation.KeyframePoint(rel, com.tharunbirla.librecuts.models.keyframeValueAt(list, rel, default))
+    }
+
     private fun upsertKey(list: List<EditOperation.KeyframePoint>, p: EditOperation.KeyframePoint): List<EditOperation.KeyframePoint> {
         val m = list.toMutableList()
-        val i = m.indexOfFirst { Math.abs(it.timeMs - p.timeMs) < 150L }
+        val i = m.indexOfFirst { Math.abs(it.timeMs - p.timeMs) < KEYFRAME_SNAP_MS }
         if (i != -1) m[i] = p.copy(interpolationType = m[i].interpolationType) else m.add(p)
         return m
     }
@@ -8705,6 +8946,8 @@ class VideoEditingActivity : AppCompatActivity() {
         "Clip Scale" -> t.scaleKeyframes
         "Clip Rotation" -> t.rotationKeyframes
         "Clip Opacity" -> t.opacityKeyframes
+        "Clip Tilt X" -> t.tiltXKeyframes
+        "Clip Tilt Y" -> t.tiltYKeyframes
         else -> emptyList()
     }
 
@@ -8713,6 +8956,8 @@ class VideoEditingActivity : AppCompatActivity() {
         "Clip Scale" -> t.copy(scaleKeyframes = keys)
         "Clip Rotation" -> t.copy(rotationKeyframes = keys)
         "Clip Opacity" -> t.copy(opacityKeyframes = keys)
+        "Clip Tilt X" -> t.copy(tiltXKeyframes = keys)
+        "Clip Tilt Y" -> t.copy(tiltYKeyframes = keys)
         else -> t
     }
 
@@ -8758,8 +9003,8 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
                 android.view.MotionEvent.ACTION_MOVE -> {
                     if (c != null && c.width > 0 && c.height > 0) {
-                        val dx = (ev.rawX - mainDragLastX) / c.width
-                        val dy = (ev.rawY - mainDragLastY) / c.height
+                        val dx = (ev.rawX - mainDragLastX) / c.width * FINE_DRAG
+                        val dy = (ev.rawY - mainDragLastY) / c.height * FINE_DRAG
                         mainDragLastX = ev.rawX
                         mainDragLastY = ev.rawY
                         moveMainClipBy(dx, dy)
@@ -8792,7 +9037,14 @@ class VideoEditingActivity : AppCompatActivity() {
         popup.menu.add("Clip Scale")
         popup.menu.add("Clip Rotation")
         popup.menu.add("Clip Opacity")
+        popup.menu.add("Clip Tilt X")
+        popup.menu.add("Clip Tilt Y")
+        popup.menu.add("Effects…")
         popup.setOnMenuItemClickListener { item ->
+            if (item.title.toString() == "Effects…") {
+                showClipEffectsDialog()
+                return@setOnMenuItemClickListener true
+            }
             activeKeyframeProperty = item.title.toString()
             val toolbar = keyframeEditingToolbar ?: return@setOnMenuItemClickListener true
             toolbar.findViewById<Button>(R.id.btnKeyframeProperty)?.text = activeKeyframeProperty
@@ -8803,9 +9055,10 @@ class VideoEditingActivity : AppCompatActivity() {
             } else {
                 sliderLayout?.visibility = View.VISIBLE
                 when (activeKeyframeProperty) {
-                    "Clip Scale" -> { slider?.valueFrom = 10f; slider?.valueTo = 300f; slider?.stepSize = 1f }
-                    "Clip Rotation" -> { slider?.valueFrom = -180f; slider?.valueTo = 180f; slider?.stepSize = 1f }
+                    "Clip Scale" -> { slider?.valueFrom = 10f; slider?.valueTo = 300f; slider?.stepSize = 0.1f }
+                    "Clip Rotation" -> { slider?.valueFrom = -180f; slider?.valueTo = 180f; slider?.stepSize = 0.1f }
                     "Clip Opacity" -> { slider?.valueFrom = 0f; slider?.valueTo = 100f; slider?.stepSize = 1f }
+                    "Clip Tilt X", "Clip Tilt Y" -> { slider?.valueFrom = -80f; slider?.valueTo = 80f; slider?.stepSize = 0.1f }
                 }
             }
             updateDraggableOverlayFromKeyframes(getGlobalPosition())
@@ -8818,7 +9071,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val g = getGlobalPosition()
         val (idx, t, rel) = mainClipContext(g) ?: return
         val keys = mainClipKeys(t).toMutableList()
-        val ei = keys.indexOfFirst { Math.abs(it.timeMs - rel) < 150L }
+        val ei = keys.indexOfFirst { Math.abs(it.timeMs - rel) < KEYFRAME_SNAP_MS }
         if (ei != -1) {
             keys.removeAt(ei)
         } else {
@@ -8827,6 +9080,8 @@ class VideoEditingActivity : AppCompatActivity() {
                     "Clip Position" -> { val p = t.positionAt(rel); EditOperation.KeyframePoint(rel, p.first, p.second) }
                     "Clip Scale" -> EditOperation.KeyframePoint(rel, t.scaleAt(rel))
                     "Clip Rotation" -> EditOperation.KeyframePoint(rel, t.rotationAt(rel))
+                    "Clip Tilt X" -> EditOperation.KeyframePoint(rel, t.tiltXAt(rel))
+                    "Clip Tilt Y" -> EditOperation.KeyframePoint(rel, t.tiltYAt(rel))
                     else -> EditOperation.KeyframePoint(rel, t.opacityAt(rel))
                 }
             )
@@ -8842,17 +9097,25 @@ class VideoEditingActivity : AppCompatActivity() {
         val nt = when (activeKeyframeProperty) {
             "Clip Scale" -> {
                 val v = value / 100f
-                tv?.text = "${value.toInt()}%"
+                tv?.text = "${formatKeyframeNumber(value)}%"
                 t.copy(scale = v, scaleKeyframes = upsertKey(t.scaleKeyframes, EditOperation.KeyframePoint(rel, v)))
             }
             "Clip Rotation" -> {
-                tv?.text = "${value.toInt()}°"
+                tv?.text = "${formatKeyframeNumber(value)}°"
                 t.copy(rotation = value, rotationKeyframes = upsertKey(t.rotationKeyframes, EditOperation.KeyframePoint(rel, value)))
             }
             "Clip Opacity" -> {
                 val v = value / 100f
                 tv?.text = "${value.toInt()}%"
                 t.copy(opacity = v, opacityKeyframes = upsertKey(t.opacityKeyframes, EditOperation.KeyframePoint(rel, v)))
+            }
+            "Clip Tilt X" -> {
+                tv?.text = "${formatKeyframeNumber(value)}°"
+                t.copy(tiltX = value, tiltXKeyframes = upsertKey(t.tiltXKeyframes, EditOperation.KeyframePoint(rel, value)))
+            }
+            "Clip Tilt Y" -> {
+                tv?.text = "${formatKeyframeNumber(value)}°"
+                t.copy(tiltY = value, tiltYKeyframes = upsertKey(t.tiltYKeyframes, EditOperation.KeyframePoint(rel, value)))
             }
             else -> return
         }
@@ -8865,9 +9128,11 @@ class VideoEditingActivity : AppCompatActivity() {
         val slider = keyframeEditingToolbar?.findViewById<com.google.android.material.slider.Slider>(R.id.sliderKeyframeValue)
         val tv = keyframeEditingToolbar?.findViewById<TextView>(R.id.tvSliderValue)
         val shown: Float? = when (activeKeyframeProperty) {
-            "Clip Scale" -> { val v = Math.round(t.scaleAt(rel) * 100f).toFloat(); tv?.text = "${v.toInt()}%"; v }
-            "Clip Rotation" -> { val v = Math.round(t.rotationAt(rel)).toFloat(); tv?.text = "${v.toInt()}°"; v }
+            "Clip Scale" -> { val v = Math.round(t.scaleAt(rel) * 1000f) / 10f; tv?.text = "${formatKeyframeNumber(v)}%"; v }
+            "Clip Rotation" -> { val v = Math.round(t.rotationAt(rel) * 10f) / 10f; tv?.text = "${formatKeyframeNumber(v)}°"; v }
             "Clip Opacity" -> { val v = Math.round(t.opacityAt(rel) * 100f).toFloat(); tv?.text = "${v.toInt()}%"; v }
+            "Clip Tilt X" -> { val v = Math.round(t.tiltXAt(rel) * 10f) / 10f; tv?.text = "${formatKeyframeNumber(v)}°"; v }
+            "Clip Tilt Y" -> { val v = Math.round(t.tiltYAt(rel) * 10f) / 10f; tv?.text = "${formatKeyframeNumber(v)}°"; v }
             else -> null
         }
         if (shown != null && slider != null) slider.value = shown.coerceIn(slider.valueFrom, slider.valueTo)
@@ -8887,6 +9152,8 @@ class VideoEditingActivity : AppCompatActivity() {
         val popup = androidx.appcompat.widget.PopupMenu(this, view)
         popup.menu.add("Position")
         if (op !is EditOperation.NullLayer) popup.menu.add("Opacity")
+        if (op is EditOperation.AddText || op is EditOperation.AddImageOverlay) popup.menu.add("Scale")
+        if (op is EditOperation.AddImageOverlay) popup.menu.add("Rotation")
         if (op is EditOperation.AddImageOverlay) {
             val isVideo = op.fileDurationMs != null && op.fileDurationMs > 0
             if (isVideo) {
@@ -8936,6 +9203,16 @@ class VideoEditingActivity : AppCompatActivity() {
                         slider?.valueTo = 4.0f
                         slider?.stepSize = 0.05f
                     }
+                    "Scale" -> {
+                        slider?.valueFrom = 10.0f
+                        slider?.valueTo = 400.0f
+                        slider?.stepSize = 0.1f
+                    }
+                    "Rotation" -> {
+                        slider?.valueFrom = -180.0f
+                        slider?.valueTo = 180.0f
+                        slider?.stepSize = 0.1f
+                    }
                     "Mask Size" -> {
                         slider?.valueFrom = 1.0f
                         slider?.valueTo = 200.0f
@@ -8984,13 +9261,13 @@ class VideoEditingActivity : AppCompatActivity() {
                     when (activeKeyframeProperty) {
                         "Position" -> {
                             val currentList = op.positionKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else currentList.add(EditOperation.KeyframePoint(relativeTimeMs, op.relativeX, op.relativeY))
                             viewModel.updateOperation(op.copy(positionKeyframes = currentList))
                         }
                         "Opacity" -> {
                             val currentList = op.opacityKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val currentOpacity = if (currentList.isNotEmpty()) interpolateKeyframes(currentList, relativeTimeMs, op.opacity) else op.opacity
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, currentOpacity))
@@ -8999,17 +9276,19 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                         "Speed" -> {
                             val currentList = op.speedKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val currentSpeed = if (currentList.isNotEmpty()) interpolateKeyframes(currentList, relativeTimeMs, 1.0f) else 1.0f
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, currentSpeed))
                             }
                             viewModel.updateOperation(op.copy(speedKeyframes = currentList))
                         }
+                        "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = toggleKey(op.scaleKeyframes, relativeTimeMs, 1f)))
+                        "Rotation" -> viewModel.updateOperation(op.copy(rotationKeyframes = toggleKey(op.rotationKeyframes, relativeTimeMs, op.rotationAngle)))
                         "Mask Position" -> {
                             val mc = op.maskConfig
                             val currentList = mc.positionKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val pos = mc.getInterpolatedPos(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, pos.first, pos.second))
@@ -9019,7 +9298,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         "Mask Size" -> {
                             val mc = op.maskConfig
                             val currentList = mc.sizeKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val sizeVal = mc.getInterpolatedSize(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, sizeVal))
@@ -9029,7 +9308,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         "Mask Rotation" -> {
                             val mc = op.maskConfig
                             val currentList = mc.rotationKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val rotVal = mc.getInterpolatedRotation(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, rotVal))
@@ -9039,7 +9318,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         "Mask Feather" -> {
                             val mc = op.maskConfig
                             val currentList = mc.featherKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val featherVal = mc.getInterpolatedFeather(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, featherVal))
@@ -9051,7 +9330,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 is EditOperation.NullLayer -> {
                     if (activeKeyframeProperty == "Position") {
                         val currentList = op.positionKeyframes.toMutableList()
-                        val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                        val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                         if (existingIndex != -1) {
                             currentList.removeAt(existingIndex)
                         } else {
@@ -9065,19 +9344,20 @@ class VideoEditingActivity : AppCompatActivity() {
                     when (activeKeyframeProperty) {
                         "Position" -> {
                             val currentList = op.positionKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else currentList.add(EditOperation.KeyframePoint(relativeTimeMs, op.relativeX ?: 0.5f, op.relativeY ?: 0.5f))
                             viewModel.updateOperation(op.copy(positionKeyframes = currentList))
                         }
                         "Opacity" -> {
                             val currentList = op.opacityKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val currentOpacity = if (currentList.isNotEmpty()) interpolateKeyframes(currentList, relativeTimeMs, op.opacity) else op.opacity
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, currentOpacity))
                             }
                             viewModel.updateOperation(op.copy(opacityKeyframes = currentList))
                         }
+                        "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = toggleKey(op.scaleKeyframes, relativeTimeMs, 1f)))
                     }
                 }
                 else -> {}
@@ -9094,7 +9374,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     when (activeKeyframeProperty) {
                         "Mask Position" -> {
                             val currentList = mc.positionKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val pos = mc.getInterpolatedPos(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, pos.first, pos.second))
@@ -9105,7 +9385,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                         "Mask Size" -> {
                             val currentList = mc.sizeKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val sizeVal = mc.getInterpolatedSize(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, sizeVal))
@@ -9116,7 +9396,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                         "Mask Rotation" -> {
                             val currentList = mc.rotationKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val rotVal = mc.getInterpolatedRotation(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, rotVal))
@@ -9127,7 +9407,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                         "Mask Feather" -> {
                             val currentList = mc.featherKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             if (existingIndex != -1) currentList.removeAt(existingIndex) else {
                                 val featherVal = mc.getInterpolatedFeather(relativeTimeMs)
                                 currentList.add(EditOperation.KeyframePoint(relativeTimeMs, featherVal))
@@ -9164,21 +9444,23 @@ class VideoEditingActivity : AppCompatActivity() {
                             "Opacity" -> {
                                 val opacityValue = value / 100.0f
                                 val currentList = op.opacityKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, opacityValue)
                                 if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                                 viewModel.updateOperation(op.copy(opacityKeyframes = currentList))
                             }
                             "Speed" -> {
                                 val currentList = op.speedKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
                                 if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                                 viewModel.updateOperation(op.copy(speedKeyframes = currentList))
                             }
+                            "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = upsertKey(op.scaleKeyframes, EditOperation.KeyframePoint(relativeTimeMs, value / 100f))))
+                            "Rotation" -> viewModel.updateOperation(op.copy(rotationKeyframes = upsertKey(op.rotationKeyframes, EditOperation.KeyframePoint(relativeTimeMs, value))))
                             "Mask Size" -> {
                                 val currentList = mc.sizeKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
                                 if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                                 val relScale = value / 200f
@@ -9187,7 +9469,7 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                             "Mask Rotation" -> {
                                 val currentList = mc.rotationKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
                                 if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                                 val newMc = mc.copy(rotationAngle = value, rotationKeyframes = currentList)
@@ -9195,7 +9477,7 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                             "Mask Feather" -> {
                                 val currentList = mc.featherKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                                 val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
                                 if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                                 val newMc = mc.copy(feather = value, featherKeyframes = currentList)
@@ -9209,10 +9491,12 @@ class VideoEditingActivity : AppCompatActivity() {
                         if (activeKeyframeProperty == "Opacity") {
                             val opacityValue = value / 100.0f
                             val currentList = op.opacityKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             val newPoint = EditOperation.KeyframePoint(relativeTimeMs, opacityValue)
                             if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                             viewModel.updateOperation(op.copy(opacityKeyframes = currentList))
+                        } else if (activeKeyframeProperty == "Scale") {
+                            viewModel.updateOperation(op.copy(scaleKeyframes = upsertKey(op.scaleKeyframes, EditOperation.KeyframePoint(relativeTimeMs, value / 100f))))
                         }
                     }
                     else -> {}
@@ -9230,7 +9514,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     when (activeKeyframeProperty) {
                         "Mask Size" -> {
                             val currentList = mc.sizeKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
                             if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                             val relScale = value / 200f
@@ -9240,7 +9524,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                         "Mask Rotation" -> {
                             val currentList = mc.rotationKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
                             if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                             val newMc = mc.copy(rotationAngle = value, rotationKeyframes = currentList)
@@ -9249,7 +9533,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                         "Mask Feather" -> {
                             val currentList = mc.featherKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
                             if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                             val newMc = mc.copy(feather = value, featherKeyframes = currentList)
@@ -9266,9 +9550,10 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun updateKeyframeActionButtonState(globalTimeMs: Long) {
         if (isMainClipKeyframeMode()) {
             val ctx = mainClipContext(globalTimeMs) ?: return
-            val has = mainClipKeys(ctx.second).any { Math.abs(it.timeMs - ctx.third) < 150L }
+            val has = mainClipKeys(ctx.second).any { Math.abs(it.timeMs - ctx.third) < KEYFRAME_SNAP_MS }
             keyframeEditingToolbar?.findViewById<ImageButton>(R.id.btnKeyframeAction)
                 ?.setImageResource(if (has) R.drawable.ic_keyframe_remove else R.drawable.ic_keyframe_add)
+            updateKeyframeGraph(globalTimeMs)
             return
         }
         val selectedId = viewModel.selectedOperationId.value
@@ -9288,26 +9573,29 @@ class VideoEditingActivity : AppCompatActivity() {
                 hasKeyframe = when (op) {
                     is EditOperation.AddImageOverlay -> {
                         when (activeKeyframeProperty) {
-                            "Position" -> op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Speed" -> op.speedKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Position" -> op.maskConfig.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Size" -> op.maskConfig.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Rotation" -> op.maskConfig.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Feather" -> op.maskConfig.featherKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            "Position" -> op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Speed" -> op.speedKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Scale" -> op.scaleKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Rotation" -> op.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Mask Position" -> op.maskConfig.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Mask Size" -> op.maskConfig.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Mask Rotation" -> op.maskConfig.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Mask Feather" -> op.maskConfig.featherKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             else -> false
                         }
                     }
                     is EditOperation.AddText -> {
                         when (activeKeyframeProperty) {
-                            "Position" -> op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            "Position" -> op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                            "Scale" -> op.scaleKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                             else -> false
                         }
                     }
                     is EditOperation.NullLayer -> {
                         activeKeyframeProperty == "Position" &&
-                            op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                     }
                     else -> false
                 }
@@ -9322,10 +9610,10 @@ class VideoEditingActivity : AppCompatActivity() {
                     val relativeTimeMs = globalTimeMs - accumulatedStartMs
                     val mc = item.maskConfig
                     hasKeyframe = when (activeKeyframeProperty) {
-                        "Mask Position" -> mc.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                        "Mask Size" -> mc.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                        "Mask Rotation" -> mc.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                        "Mask Feather" -> mc.featherKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                        "Mask Position" -> mc.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                        "Mask Size" -> mc.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                        "Mask Rotation" -> mc.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
+                        "Mask Feather" -> mc.featherKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < KEYFRAME_SNAP_MS }
                         else -> false
                     }
                 }
@@ -9341,64 +9629,174 @@ class VideoEditingActivity : AppCompatActivity() {
         updateKeyframeGraph(globalTimeMs)
     }
 
-    private fun updateKeyframeGraph(globalTimeMs: Long) {
-        val graph = keyframeEditingToolbar?.findViewById<com.tharunbirla.librecuts.customviews.KeyframeGraphView>(R.id.graphKeyframeEasing) ?: return
-        val selectedId = viewModel.selectedOperationId.value
-        val op = viewModel.project.value?.operations?.find { it.id == selectedId }
-        var list: List<EditOperation.KeyframePoint>? = null
-        var rel = 0L
-        when (op) {
-            is EditOperation.AddImageOverlay -> {
-                rel = globalTimeMs - (op.startTimeMs ?: 0L)
-                list = when (activeKeyframeProperty) {
-                    "Position" -> op.positionKeyframes
-                    "Opacity" -> op.opacityKeyframes
-                    "Speed" -> op.speedKeyframes
-                    else -> null
-                }
-            }
-            is EditOperation.AddText -> {
-                rel = globalTimeMs - (op.startTimeMs ?: 0L)
-                list = when (activeKeyframeProperty) {
-                    "Position" -> op.positionKeyframes
-                    "Opacity" -> op.opacityKeyframes
-                    else -> null
-                }
-            }
-            is EditOperation.NullLayer -> {
-                rel = globalTimeMs - (op.startTimeMs ?: 0L)
-                list = if (activeKeyframeProperty == "Position") op.positionKeyframes else null
-            }
-            else -> {}
+    /** Keyframes of the property being edited, and the playhead time relative to them. */
+    private fun activeKeyframes(globalTimeMs: Long): Pair<List<EditOperation.KeyframePoint>, Long>? {
+        if (isMainClipKeyframeMode()) {
+            val (_, t, rel) = mainClipContext(globalTimeMs) ?: return null
+            return Pair(mainClipKeys(t), rel)
         }
-        val kf = list?.firstOrNull { Math.abs(it.timeMs - rel) < 150L }
-        if (kf == null) {
-            graph.visibility = View.GONE
+        val selectedId = viewModel.selectedOperationId.value
+        val op = viewModel.project.value?.operations?.find { it.id == selectedId } ?: return null
+        return when (op) {
+            is EditOperation.AddImageOverlay -> when (activeKeyframeProperty) {
+                "Position" -> op.positionKeyframes
+                "Opacity" -> op.opacityKeyframes
+                "Speed" -> op.speedKeyframes
+                "Scale" -> op.scaleKeyframes
+                "Rotation" -> op.rotationKeyframes
+                "Mask Position" -> op.maskConfig.positionKeyframes
+                "Mask Size" -> op.maskConfig.sizeKeyframes
+                "Mask Rotation" -> op.maskConfig.rotationKeyframes
+                "Mask Feather" -> op.maskConfig.featherKeyframes
+                else -> null
+            }?.let { Pair(it, globalTimeMs - (op.startTimeMs ?: 0L)) }
+            is EditOperation.AddText -> when (activeKeyframeProperty) {
+                "Position" -> op.positionKeyframes
+                "Opacity" -> op.opacityKeyframes
+                "Scale" -> op.scaleKeyframes
+                else -> null
+            }?.let { Pair(it, globalTimeMs - (op.startTimeMs ?: 0L)) }
+            is EditOperation.NullLayer -> if (activeKeyframeProperty == "Position") Pair(op.positionKeyframes, globalTimeMs - (op.startTimeMs ?: 0L)) else null
+            else -> null
+        }
+    }
+
+    /** Seek exactly onto the previous (-1) or next (+1) keyframe of the active property. */
+    private fun jumpToKeyframe(direction: Int) {
+        val g = getGlobalPosition()
+        val (keys, rel) = activeKeyframes(g) ?: return
+        val times = keys.map { it.timeMs }.sorted()
+        val target = if (direction < 0) times.lastOrNull { it < rel - KEYFRAME_SNAP_MS } else times.firstOrNull { it > rel + KEYFRAME_SNAP_MS }
+        if (target == null) {
+            Toast.makeText(this, if (direction < 0) "No earlier keyframe" else "No later keyframe", Toast.LENGTH_SHORT).show()
             return
         }
-        graph.visibility = View.VISIBLE
-        graph.easingType = kf.interpolationType
+        val globalTarget = (g - rel + target).coerceAtLeast(0L)
+        seekToGlobalPosition(globalTarget, force = true)
+        updateDraggableOverlayFromKeyframes(globalTarget)
+    }
+
+    private fun keyframeSlider() = keyframeEditingToolbar?.findViewById<com.google.android.material.slider.Slider>(R.id.sliderKeyframeValue)
+
+    /** Set the slider to [value] snapped to its step (Slider rejects off-step values) and apply it. */
+    private fun applyKeyframeValue(value: Float) {
+        val slider = keyframeSlider() ?: return
+        val step = slider.stepSize.takeIf { it > 0f } ?: 1f
+        val snapped = (slider.valueFrom + Math.round((value.coerceIn(slider.valueFrom, slider.valueTo) - slider.valueFrom) / step) * step)
+            .coerceIn(slider.valueFrom, slider.valueTo)
+        val clean = Math.round(snapped * 1000f) / 1000f
+        slider.value = clean
+        handleKeyframeSliderChange(clean)
+        updateDraggableOverlayFromKeyframes(getGlobalPosition())
+    }
+
+    private fun stepKeyframeValue(direction: Int) {
+        val slider = keyframeSlider() ?: return
+        applyKeyframeValue(slider.value + direction * (slider.stepSize.takeIf { it > 0f } ?: 1f))
+    }
+
+    private fun typeKeyframeValue() {
+        val slider = keyframeSlider() ?: return
+        val input = com.google.android.material.textfield.TextInputEditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+            setText(String.format(java.util.Locale.US, "%.2f", slider.value).trimEnd('0').trimEnd('.'))
+            setSelectAllOnFocus(true)
+        }
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = FrameLayout(this).apply { setPadding(pad, pad / 2, pad, 0); addView(input) }
+        MaterialAlertDialogBuilder(this)
+            .setTitle("$activeKeyframeProperty (${formatKeyframeNumber(slider.valueFrom)} to ${formatKeyframeNumber(slider.valueTo)})")
+            .setView(box)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Set") { _, _ ->
+                val v = input.text?.toString()?.replace(',', '.')?.toFloatOrNull()
+                if (v == null || !v.isFinite()) Toast.makeText(this, "Not a number", Toast.LENGTH_SHORT).show() else applyKeyframeValue(v)
+            }
+            .show()
+        input.requestFocus()
+    }
+
+    private fun formatKeyframeNumber(v: Float): String = String.format(java.util.Locale.US, "%.1f", v).removeSuffix(".0")
+
+    /** Move the selected layer by a fraction of the frame and keyframe it at the playhead. */
+    private fun nudgeKeyframePosition(dx: Float, dy: Float) {
+        if (isMainClipKeyframeMode()) {
+            moveMainClipBy(dx, dy)
+            return
+        }
+        val g = getGlobalPosition()
+        val selectedId = viewModel.selectedOperationId.value
+        when (val op = viewModel.project.value?.operations?.find { it.id == selectedId }) {
+            is EditOperation.AddImageOverlay -> {
+                val rel = g - (op.startTimeMs ?: 0L)
+                val cur = com.tharunbirla.librecuts.models.keyframePairAt(op.positionKeyframes, rel, op.relativeX, op.relativeY)
+                val p = EditOperation.KeyframePoint(rel, cur.first + dx, cur.second + dy)
+                viewModel.updateOperation(op.copy(positionKeyframes = upsertKey(op.positionKeyframes, p)))
+            }
+            is EditOperation.AddText -> {
+                val rel = g - (op.startTimeMs ?: 0L)
+                val cur = com.tharunbirla.librecuts.models.keyframePairAt(op.positionKeyframes, rel, op.relativeX ?: 0.5f, op.relativeY ?: 0.5f)
+                val p = EditOperation.KeyframePoint(rel, cur.first + dx, cur.second + dy)
+                viewModel.updateOperation(op.copy(positionKeyframes = upsertKey(op.positionKeyframes, p)))
+            }
+            else -> return
+        }
+        updateDraggableOverlayFromKeyframes(g)
+    }
+
+    private fun updateKeyframeGraph(globalTimeMs: Long) {
+        val graph = keyframeEditingToolbar?.findViewById<com.tharunbirla.librecuts.customviews.KeyframeGraphView>(R.id.graphKeyframeEasing) ?: return
+        val active = activeKeyframes(globalTimeMs)
+        val list = active?.first
+        val rel = active?.second ?: 0L
+        val kf = list?.firstOrNull { Math.abs(it.timeMs - rel) < KEYFRAME_SNAP_MS }
+        val easingPanel = keyframeEditingToolbar?.findViewById<View>(R.id.layoutKeyframeEasing)
+        if (kf == null) {
+            easingPanel?.visibility = View.GONE
+            return
+        }
+        easingPanel?.visibility = View.VISIBLE
+        keyframeEditingToolbar?.findViewById<com.google.android.material.chip.ChipGroup>(R.id.chipsKeyframeEasing)?.let { chips ->
+            for (i in 0 until chips.childCount) {
+                val chip = chips.getChildAt(i)
+                chip.setOnClickListener { graph.applyPreset(chip.tag as String) }
+            }
+        }
+        // Old project files can hold a null type (Gson), which means linear.
+        graph.easingType = (kf.interpolationType as String?) ?: "linear"
         val prop = activeKeyframeProperty
         val relFinal = rel
         graph.onEasingChange = { type -> setKeyframeEasing(prop, relFinal, type) }
     }
 
     private fun setKeyframeEasing(prop: String, rel: Long, type: String) {
+        fun retag(l: List<EditOperation.KeyframePoint>) = l.map {
+            if (Math.abs(it.timeMs - rel) < KEYFRAME_SNAP_MS) it.copy(interpolationType = type) else it
+        }
+        if (isMainClipKeyframeMode()) {
+            val (idx, t, r) = mainClipContext(getGlobalPosition()) ?: return
+            commitMainClipTransform(idx, withMainClipKeys(t, retag(mainClipKeys(t))), r)
+            return
+        }
         val selectedId = viewModel.selectedOperationId.value
         val op = viewModel.project.value?.operations?.find { it.id == selectedId } ?: return
-        fun retag(l: List<EditOperation.KeyframePoint>) = l.map {
-            if (Math.abs(it.timeMs - rel) < 150L) it.copy(interpolationType = type) else it
-        }
         when (op) {
             is EditOperation.AddImageOverlay -> when (prop) {
                 "Position" -> viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
                 "Opacity" -> viewModel.updateOperation(op.copy(opacityKeyframes = retag(op.opacityKeyframes)))
                 "Speed" -> viewModel.updateOperation(op.copy(speedKeyframes = retag(op.speedKeyframes)))
+                "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = retag(op.scaleKeyframes)))
+                "Rotation" -> viewModel.updateOperation(op.copy(rotationKeyframes = retag(op.rotationKeyframes)))
+                "Mask Position" -> viewModel.updateOperation(op.copy(maskConfig = op.maskConfig.copy(positionKeyframes = retag(op.maskConfig.positionKeyframes))))
+                "Mask Size" -> viewModel.updateOperation(op.copy(maskConfig = op.maskConfig.copy(sizeKeyframes = retag(op.maskConfig.sizeKeyframes))))
+                "Mask Rotation" -> viewModel.updateOperation(op.copy(maskConfig = op.maskConfig.copy(rotationKeyframes = retag(op.maskConfig.rotationKeyframes))))
+                "Mask Feather" -> viewModel.updateOperation(op.copy(maskConfig = op.maskConfig.copy(featherKeyframes = retag(op.maskConfig.featherKeyframes))))
                 else -> {}
             }
             is EditOperation.AddText -> when (prop) {
                 "Position" -> viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
                 "Opacity" -> viewModel.updateOperation(op.copy(opacityKeyframes = retag(op.opacityKeyframes)))
+                "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = retag(op.scaleKeyframes)))
                 else -> {}
             }
             is EditOperation.NullLayer -> if (prop == "Position") {
@@ -9409,6 +9807,9 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun updateDraggableOverlayFromKeyframes(globalTimeMs: Long) {
+        keyframeEditingToolbar?.findViewById<View>(R.id.layoutKeyframeNudge)?.visibility =
+            if ((activeKeyframeProperty == "Position" || activeKeyframeProperty == "Clip Position") &&
+                viewModel.project.value?.operations?.find { it.id == viewModel.selectedOperationId.value } !is EditOperation.NullLayer) View.VISIBLE else View.GONE
         if (isMainClipKeyframeMode()) {
             updateMainClipKeyframeUi(globalTimeMs)
             return
@@ -9439,15 +9840,26 @@ class VideoEditingActivity : AppCompatActivity() {
                     
                     val evaluatedMask = op.maskConfig.evaluatedAt(relativeTimeMs)
                     
+                    val imgScale = com.tharunbirla.librecuts.models.keyframeValueAt(op.scaleKeyframes, relativeTimeMs, 1f)
+                    val imgRotation = com.tharunbirla.librecuts.models.keyframeValueAt(op.rotationKeyframes, relativeTimeMs, op.rotationAngle)
                     draggableImageOverlay?.setProperties(
                         interpolatedPos.first,
                         interpolatedPos.second,
-                        op.relativeWidth,
-                        op.relativeHeight,
-                        op.rotationAngle,
+                        op.relativeWidth * imgScale,
+                        op.relativeHeight * imgScale,
+                        imgRotation,
                         interpolatedOpacity,
                         op.isMirrored
                     )
+                    if (activeKeyframeProperty == "Scale") {
+                        val v = (Math.round(imgScale * 1000f) / 10f).coerceIn(minVal, maxVal)
+                        slider?.value = v
+                        tvSliderValue?.text = "${formatKeyframeNumber(v)}%"
+                    } else if (activeKeyframeProperty == "Rotation") {
+                        val v = (Math.round(imgRotation * 10f) / 10f).coerceIn(minVal, maxVal)
+                        slider?.value = v
+                        tvSliderValue?.text = "${formatKeyframeNumber(v)}°"
+                    }
                     draggableImageOverlay?.maskConfig = evaluatedMask
                     draggableImageOverlay?.isMaskEditingMode = evaluatedMask.shape != EditOperation.MaskShape.NONE
 
@@ -9507,6 +9919,15 @@ class VideoEditingActivity : AppCompatActivity() {
                         interpolatedPos.second,
                         interpolatedOpacity
                     )
+                    if (op.scaleKeyframes.isNotEmpty() || activeKeyframeProperty == "Scale") {
+                        val textScale = com.tharunbirla.librecuts.models.keyframeValueAt(op.scaleKeyframes, relativeTimeMs, 1f)
+                        draggableTextOverlay?.setFontSize(Math.round(op.fontSize * textScale).coerceAtLeast(1))
+                        if (activeKeyframeProperty == "Scale") {
+                            val v = (Math.round(textScale * 1000f) / 10f).coerceIn(minVal, maxVal)
+                            slider?.value = v
+                            tvSliderValue?.text = "${formatKeyframeNumber(v)}%"
+                        }
+                    }
                     
                     if (activeKeyframeProperty == "Opacity") {
                         val progress = (interpolatedOpacity * 100).toInt()
@@ -9556,23 +9977,7 @@ class VideoEditingActivity : AppCompatActivity() {
         timeMs: Long,
         defaultValue: Float
     ): Float {
-        if (keyframes.isEmpty()) return defaultValue
-        val sorted = keyframes.sortedBy { it.timeMs }
-        if (timeMs <= sorted.first().timeMs) {
-            return sorted.first().valueX
-        }
-        if (timeMs >= sorted.last().timeMs) {
-            return sorted.last().valueX
-        }
-        for (i in 0 until sorted.size - 1) {
-            val k1 = sorted[i]
-            val k2 = sorted[i + 1]
-            if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                return k1.valueX + progress * (k2.valueX - k1.valueX)
-            }
-        }
-        return defaultValue
+        return com.tharunbirla.librecuts.models.keyframeValueAt(keyframes, timeMs, defaultValue)
     }
 
     private fun interpolateKeyframePosition(
@@ -9581,25 +9986,7 @@ class VideoEditingActivity : AppCompatActivity() {
         defaultX: Float,
         defaultY: Float
     ): Pair<Float, Float> {
-        if (keyframes.isEmpty()) return Pair(defaultX, defaultY)
-        val sorted = keyframes.sortedBy { it.timeMs }
-        if (timeMs <= sorted.first().timeMs) {
-            return Pair(sorted.first().valueX, sorted.first().valueY)
-        }
-        if (timeMs >= sorted.last().timeMs) {
-            return Pair(sorted.last().valueX, sorted.last().valueY)
-        }
-        for (i in 0 until sorted.size - 1) {
-            val k1 = sorted[i]
-            val k2 = sorted[i + 1]
-            if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                val x = k1.valueX + progress * (k2.valueX - k1.valueX)
-                val y = k1.valueY + progress * (k2.valueY - k1.valueY)
-                return Pair(x, y)
-            }
-        }
-        return Pair(defaultX, defaultY)
+        return com.tharunbirla.librecuts.models.keyframePairAt(keyframes, timeMs, defaultX, defaultY)
     }
 
     private fun showMaskBottomSheet() {
@@ -9814,6 +10201,9 @@ class VideoEditingActivity : AppCompatActivity() {
         private const val PICK_AUDIO_REQUEST = 2
         private const val PICK_IMAGE_REQUEST = 3
         private const val PICK_SRT_REQUEST = 4
+        /** Two keyframes closer than this are the same keyframe; under one frame at 24 fps. */
+        private const val KEYFRAME_SNAP_MS = 40L
+        private const val FINE_DRAG = 0.4f
         private const val PICK_DIRECTORY_REQUEST = 5
         private const val PICK_BACKGROUND_IMAGE_REQUEST = 6
     }

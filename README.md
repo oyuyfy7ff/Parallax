@@ -53,6 +53,7 @@ Help resist this gatekeeping and support the movement at [keepandroidopen.org](h
 - **Masking** - Apply various mask shapes to your overlays for creative effects.
 - **Chroma Key** - Remove backgrounds from any overlay using the green screen effect.
 - **Keyframes** - Animate overlays across the screen with keyframe support.
+- **Auto Subtitles (optional, online)** - Generate captions from the project audio with your own speech-to-text API key (OpenAI-compatible: OpenAI, Groq, self-hosted Whisper). Off until you add a key; audio is uploaded only when you tap Auto-generate.
 - **Subtitles (Captions)** - Import custom `.srt` subtitle files with a dedicated toolbar slider for resizing and fully interactive touch-based positioning directly on the video preview.
 - **Layer Management** - Easily reorder overlay layers to control what renders on top.
 - **Audio** - Manage soundtracks effortlessly by importing custom music or audio tracks, recording voice overs, applying audio ducking and fades, amplifying volume up to 200%, and muting original audio.

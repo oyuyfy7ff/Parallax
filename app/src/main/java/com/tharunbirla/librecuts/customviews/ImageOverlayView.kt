@@ -230,23 +230,7 @@ class ImageOverlayView @JvmOverloads constructor(
         timeMs: Long,
         defaultValue: Float
     ): Float {
-        if (keyframes.isEmpty()) return defaultValue
-        val sorted = keyframes.sortedBy { it.timeMs }
-        if (timeMs <= sorted.first().timeMs) {
-            return sorted.first().valueX
-        }
-        if (timeMs >= sorted.last().timeMs) {
-            return sorted.last().valueX
-        }
-        for (i in 0 until sorted.size - 1) {
-            val k1 = sorted[i]
-            val k2 = sorted[i + 1]
-            if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                return k1.valueX + progress * (k2.valueX - k1.valueX)
-            }
-        }
-        return defaultValue
+        return com.tharunbirla.librecuts.models.keyframeValueAt(keyframes, timeMs, defaultValue)
     }
 
     private fun interpolateKeyframePosition(
@@ -255,25 +239,7 @@ class ImageOverlayView @JvmOverloads constructor(
         defaultX: Float,
         defaultY: Float
     ): Pair<Float, Float> {
-        if (keyframes.isEmpty()) return Pair(defaultX, defaultY)
-        val sorted = keyframes.sortedBy { it.timeMs }
-        if (timeMs <= sorted.first().timeMs) {
-            return Pair(sorted.first().valueX, sorted.first().valueY)
-        }
-        if (timeMs >= sorted.last().timeMs) {
-            return Pair(sorted.last().valueX, sorted.last().valueY)
-        }
-        for (i in 0 until sorted.size - 1) {
-            val k1 = sorted[i]
-            val k2 = sorted[i + 1]
-            if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                val x = k1.valueX + progress * (k2.valueX - k1.valueX)
-                val y = k1.valueY + progress * (k2.valueY - k1.valueY)
-                return Pair(x, y)
-            }
-        }
-        return Pair(defaultX, defaultY)
+        return com.tharunbirla.librecuts.models.keyframePairAt(keyframes, timeMs, defaultX, defaultY)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -307,10 +273,14 @@ class ImageOverlayView @JvmOverloads constructor(
             } else {
                 op.opacity
             }
+            val imgScale = com.tharunbirla.librecuts.models.keyframeValueAt(op.scaleKeyframes, relativeTimeMs, 1f)
             val interpolatedOp = op.copy(
                 relativeX = interpolatedPos.first,
                 relativeY = interpolatedPos.second,
-                opacity = interpolatedOpacity
+                opacity = interpolatedOpacity,
+                relativeWidth = op.relativeWidth * imgScale,
+                relativeHeight = op.relativeHeight * imgScale,
+                rotationAngle = com.tharunbirla.librecuts.models.keyframeValueAt(op.rotationKeyframes, relativeTimeMs, op.rotationAngle)
             )
 
             if (isGif || isVideo) {

@@ -49,6 +49,17 @@
                 app:iconGravity="textEnd"
                 app:iconTint="@color/textColor"/>
 
+            <ImageButton
+                android:id="@+id/btnKeyframePrev"
+                android:layout_width="36dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_media_previous"
+                android:contentDescription="Previous keyframe"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                app:tint="@color/activeTool" />
+
             <!-- Add/Remove Keyframe Button -->
             <ImageButton
                 android:id="@+id/btnKeyframeAction"
@@ -57,6 +68,17 @@
                 android:layout_marginEnd="4dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:src="@drawable/ic_keyframe_add"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                app:tint="@color/activeTool" />
+
+            <ImageButton
+                android:id="@+id/btnKeyframeNext"
+                android:layout_width="36dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@android:drawable/ic_media_next"
+                android:contentDescription="Next keyframe"
                 android:padding="8dp"
                 android:scaleType="fitCenter"
                 app:tint="@color/activeTool" />
@@ -72,13 +94,93 @@
                 app:tint="@color/activeTool" />
         </LinearLayout>
 
-        <com.tharunbirla.librecuts.customviews.KeyframeGraphView
-            android:id="@+id/graphKeyframeEasing"
-            android:layout_width="120dp"
-            android:layout_height="80dp"
-            android:layout_gravity="center_horizontal"
+        <!-- Easing curve editor for the keyframe at the playhead (shown only on a keyframe) -->
+        <LinearLayout
+            android:id="@+id/layoutKeyframeEasing"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
             android:layout_marginTop="8dp"
-            android:visibility="gone" />
+            android:visibility="gone">
+
+            <com.tharunbirla.librecuts.customviews.KeyframeGraphView
+                android:id="@+id/graphKeyframeEasing"
+                android:layout_width="match_parent"
+                android:layout_height="150dp"
+                android:layout_marginHorizontal="16dp"
+                android:contentDescription="Easing curve. Drag the two handles to shape it." />
+
+            <HorizontalScrollView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:scrollbars="none"
+                android:paddingHorizontal="12dp"
+                android:clipToPadding="false">
+
+                <com.google.android.material.chip.ChipGroup
+                    android:id="@+id/chipsKeyframeEasing"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    app:singleLine="true"
+                    app:chipSpacingHorizontal="6dp">
+
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Linear"
+                        android:tag="linear" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Ease In"
+                        android:tag="ease_in" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Ease Out"
+                        android:tag="ease_out" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Ease In-Out"
+                        android:tag="ease_in_out" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Smooth"
+                        android:tag="bezier:0.250,0.100,0.250,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Snappy"
+                        android:tag="bezier:0.200,0.000,0.000,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Back"
+                        android:tag="bezier:0.340,1.560,0.640,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Anticipate"
+                        android:tag="bezier:0.360,-0.560,0.660,1.000" />
+                    <com.google.android.material.chip.Chip
+                        style="@style/Widget.Material3.Chip.Assist"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Hold"
+                        android:tag="hold" />
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
+        </LinearLayout>
 
         <!-- Value Slider Row (hidden by default, shown for Opacity/Speed) -->
         <LinearLayout
@@ -105,6 +207,9 @@
 
                 <TextView
                     android:id="@+id/tvSliderValue"
+                    android:background="?attr/selectableItemBackground"
+                    android:contentDescription="Tap to type an exact value"
+                    android:paddingHorizontal="6dp"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:layout_alignParentEnd="true"
@@ -114,9 +219,29 @@
                     android:fontFamily="sans-serif-medium" />
             </RelativeLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnKeyframeMinus"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="−"
+                android:textSize="20sp"
+                android:contentDescription="Decrease value" />
+
             <com.google.android.material.slider.Slider
                 android:id="@+id/sliderKeyframeValue"
-                android:layout_width="match_parent"
+                android:layout_width="0dp"
+                android:layout_weight="1"
                 android:layout_height="wrap_content"
                 android:valueFrom="0.0"
                 android:valueTo="100.0"
@@ -124,6 +249,83 @@
                 app:haloColor="@color/activeTool"
                 app:thumbColor="@color/activeTool"
                 app:trackColorActive="@color/activeTool" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnKeyframePlus"
+                style="@style/Widget.Material3.Button.TextButton"
+                android:layout_width="44dp"
+                android:layout_height="44dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="+"
+                android:textSize="20sp"
+                android:contentDescription="Increase value" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Fine position nudge (Position properties): tap = 0.1% of the frame, long-press = 1% -->
+        <LinearLayout
+            android:id="@+id/layoutKeyframeNudge"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center"
+            android:layout_marginTop="4dp"
+            android:visibility="gone">
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeLeft"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="←"
+                android:textSize="18sp"
+                android:contentDescription="Move left" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeUp"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="↑"
+                android:textSize="18sp"
+                android:contentDescription="Move up" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeDown"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="↓"
+                android:textSize="18sp"
+                android:contentDescription="Move down" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnNudgeRight"
+                style="@style/Widget.Material3.Button.TonalButton"
+                android:layout_width="56dp"
+                android:layout_height="44dp"
+                android:layout_marginHorizontal="4dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="→"
+                android:textSize="18sp"
+                android:contentDescription="Move right" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

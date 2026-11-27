@@ -111,6 +111,13 @@ object ProjectSerializer {
                 return EditOperation.MuteAudio("skipped_unknown_$type")
             }
             
+            // Gson skips Kotlin defaults for these classes, so lists added after a project was saved would load as null.
+            if (clazz == EditOperation.AddText::class.java || clazz == EditOperation.AddImageOverlay::class.java) {
+                for (key in listOf("scaleKeyframes", "rotationKeyframes")) {
+                    if (!jsonObject.has(key) || jsonObject.get(key).isJsonNull) jsonObject.add(key, com.google.gson.JsonArray())
+                }
+            }
+
             return try {
                 baseGson.fromJson(jsonObject, clazz)
             } catch (e: Exception) {
