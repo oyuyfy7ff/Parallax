@@ -273,10 +273,14 @@ class ImageOverlayView @JvmOverloads constructor(
             } else {
                 op.opacity
             }
+            val imgScale = com.tharunbirla.librecuts.models.keyframeValueAt(op.scaleKeyframes, relativeTimeMs, 1f)
             val interpolatedOp = op.copy(
                 relativeX = interpolatedPos.first,
                 relativeY = interpolatedPos.second,
-                opacity = interpolatedOpacity
+                opacity = interpolatedOpacity,
+                relativeWidth = op.relativeWidth * imgScale,
+                relativeHeight = op.relativeHeight * imgScale,
+                rotationAngle = com.tharunbirla.librecuts.models.keyframeValueAt(op.rotationKeyframes, relativeTimeMs, op.rotationAngle)
             )
 
             if (isGif || isVideo) {

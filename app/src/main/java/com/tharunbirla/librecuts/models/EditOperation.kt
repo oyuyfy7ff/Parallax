@@ -103,7 +103,8 @@ sealed class EditOperation : Serializable {
         val lineSpacing: Float = 0f,
         val parentId: String? = null,
         val positionKeyframes: List<KeyframePoint> = emptyList(),
-        val opacityKeyframes: List<KeyframePoint> = emptyList()
+        val opacityKeyframes: List<KeyframePoint> = emptyList(),
+        val scaleKeyframes: List<KeyframePoint> = emptyList() // font size multiplier
     ) : EditOperation() {
         init {
             require(text.isNotEmpty()) { "Text cannot be empty" }
@@ -236,13 +237,20 @@ sealed class EditOperation : Serializable {
         val positionKeyframes: List<KeyframePoint> = emptyList(),
         val scaleKeyframes: List<KeyframePoint> = emptyList(),
         val rotationKeyframes: List<KeyframePoint> = emptyList(),
-        val opacityKeyframes: List<KeyframePoint> = emptyList()
+        val opacityKeyframes: List<KeyframePoint> = emptyList(),
+        // 3D tilt in degrees, same sense as View.rotationX / rotationY.
+        val tiltX: Float = 0f,
+        val tiltY: Float = 0f,
+        val tiltXKeyframes: List<KeyframePoint> = emptyList(),
+        val tiltYKeyframes: List<KeyframePoint> = emptyList()
     ) : Serializable {
 
         val isIdentity: Boolean
             get() = offsetX == 0f && offsetY == 0f && scale == 1f && rotation == 0f && opacity == 1f &&
+                tiltX == 0f && tiltY == 0f &&
                 positionKeyframes.isEmpty() && scaleKeyframes.isEmpty() &&
-                rotationKeyframes.isEmpty() && opacityKeyframes.isEmpty()
+                rotationKeyframes.isEmpty() && opacityKeyframes.isEmpty() &&
+                tiltXKeyframes.isEmpty() && tiltYKeyframes.isEmpty()
 
         private fun scalarAt(keys: List<KeyframePoint>, t: Long, default: Float): Float {
             if (keys.isEmpty()) return default
@@ -284,6 +292,8 @@ sealed class EditOperation : Serializable {
         fun scaleAt(t: Long): Float = scalarAt(scaleKeyframes, t, scale)
         fun rotationAt(t: Long): Float = scalarAt(rotationKeyframes, t, rotation)
         fun opacityAt(t: Long): Float = scalarAt(opacityKeyframes, t, opacity)
+        fun tiltXAt(t: Long): Float = scalarAt(tiltXKeyframes, t, tiltX)
+        fun tiltYAt(t: Long): Float = scalarAt(tiltYKeyframes, t, tiltY)
 
         fun evaluatedAt(t: Long): ClipTransform {
             if (isIdentity) return this
@@ -434,7 +444,9 @@ sealed class EditOperation : Serializable {
         val opacityKeyframes: List<KeyframePoint> = emptyList(),
         val speedKeyframes: List<KeyframePoint> = emptyList(),
         val parentId: String? = null,
-        val maskConfig: MaskConfig = MaskConfig()
+        val maskConfig: MaskConfig = MaskConfig(),
+        val scaleKeyframes: List<KeyframePoint> = emptyList(), // size multiplier
+        val rotationKeyframes: List<KeyframePoint> = emptyList() // degrees, replaces rotationAngle
     ) : EditOperation()
 
     /**

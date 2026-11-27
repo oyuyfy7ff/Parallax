@@ -525,6 +525,96 @@ class VideoEditingActivity : AppCompatActivity() {
             }
         }
     }
+    private var pendingEffectExport: com.tharunbirla.librecuts.models.ClipEffect? = null
+
+    private val importEffectLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        val json = try {
+            contentResolver.openInputStream(uri)?.use { input ->
+                // Effect files are tiny; refuse anything over 1 MB instead of loading it.
+                val bytes = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(8192)
+                while (bytes.size() <= 1_000_000) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    bytes.write(buf, 0, n)
+                }
+                if (bytes.size() > 1_000_000) null else bytes.toString("UTF-8")
+            }
+        } catch (e: Exception) { null }
+        val effect = json?.let { com.tharunbirla.librecuts.models.ClipEffects.fromJson(it) }
+        if (effect == null) {
+            Toast.makeText(this, "Not a valid LibreCuts effect file", Toast.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+        try {
+            java.io.File(effectsDir(), "${System.currentTimeMillis()}.json").writeText(com.tharunbirla.librecuts.models.ClipEffects.toJson(effect))
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not save effect: ${e.message}", Toast.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+        Toast.makeText(this, "Effect '${effect.name}' imported", Toast.LENGTH_SHORT).show()
+        applyClipEffect(effect)
+    }
+
+    private val exportEffectLauncher = registerForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        val effect = pendingEffectExport
+        pendingEffectExport = null
+        if (uri == null || effect == null) return@registerForActivityResult
+        try {
+            contentResolver.openOutputStream(uri, "wt")?.use { it.write(com.tharunbirla.librecuts.models.ClipEffects.toJson(effect).toByteArray()) }
+            Toast.makeText(this, "Effect saved", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not save effect: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun effectsDir(): java.io.File = java.io.File(filesDir, "effects").apply { mkdirs() }
+
+    private fun importedClipEffects(): List<com.tharunbirla.librecuts.models.ClipEffect> =
+        effectsDir().listFiles { f -> f.extension == "json" }.orEmpty().sortedBy { it.name }
+            .mapNotNull { f -> try { com.tharunbirla.librecuts.models.ClipEffects.fromJson(f.readText()) } catch (e: Exception) { null } }
+
+    /** Effects menu for the selected clip: built-ins, imported effects, import a file, share the current keyframes. */
+    private fun showClipEffectsDialog() {
+        val effects = com.tharunbirla.librecuts.models.ClipEffects.builtIn + importedClipEffects()
+        val labels = effects.map { it.name } + listOf("Import effect file…", "Save clip keyframes as effect…")
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Effects")
+            .setItems(labels.toTypedArray()) { _, which ->
+                when {
+                    which < effects.size -> applyClipEffect(effects[which])
+                    which == effects.size -> importEffectLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
+                    else -> {
+                        val t = mainClipContext(getGlobalPosition())?.second
+                        val effect = t?.let { com.tharunbirla.librecuts.models.ClipEffects.fromClip("My effect", it) }
+                        if (effect == null) {
+                            Toast.makeText(this, "This clip has no keyframes to save", Toast.LENGTH_SHORT).show()
+                        } else {
+                            pendingEffectExport = effect
+                            exportEffectLauncher.launch("effect.json")
+                        }
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun applyClipEffect(effect: com.tharunbirla.librecuts.models.ClipEffect) {
+        val g = getGlobalPosition()
+        val (idx, t, rel) = mainClipContext(g) ?: run {
+            Toast.makeText(this, "Select a clip first", Toast.LENGTH_SHORT).show()
+            return
+        }
+        commitMainClipTransform(idx, com.tharunbirla.librecuts.models.ClipEffects.apply(t, effect.effect, rel), rel)
+        updateKeyframeActionButtonState(g)
+        Toast.makeText(this, "${effect.name} added", Toast.LENGTH_SHORT).show()
+    }
+
     private var photoSequencePreviewImageView: ImageView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1481,6 +1571,9 @@ class VideoEditingActivity : AppCompatActivity() {
                 toolbar.findViewById<ImageButton>(R.id.btnVideoKeyframe)?.setBounceClickListener {
                     enterMainClipKeyframeMode()
                 }
+                toolbar.findViewById<ImageButton>(R.id.btnVideoEffects)?.setBounceClickListener {
+                    showClipEffectsDialog()
+                }
                 toolbar.findViewById<ImageButton>(R.id.btnVideoAdjust)?.setBounceClickListener {
                     selectedVideoIndex?.let { index ->
                         showAdjustSelectionDialog(index)
@@ -2369,6 +2462,8 @@ class VideoEditingActivity : AppCompatActivity() {
             c.scaleX = 1f
             c.scaleY = 1f
             c.rotation = 0f
+            c.rotationX = 0f
+            c.rotationY = 0f
             c.alpha = 1f
             return
         }
@@ -2383,6 +2478,10 @@ class VideoEditingActivity : AppCompatActivity() {
         c.scaleX = z * sc
         c.scaleY = z * sc
         c.rotation = t?.rotationAt(relMs) ?: 0f
+        c.rotationX = t?.tiltXAt(relMs) ?: 0f
+        c.rotationY = t?.tiltYAt(relMs) ?: 0f
+        // Camera 2.5x the frame size away; export uses the same distance (camera units are 1/72 inch).
+        c.cameraDistance = 2.5f * maxOf(c.width, c.height) * resources.displayMetrics.densityDpi / 72f
         c.alpha = (t?.opacityAt(relMs) ?: 1f).coerceIn(0f, 1f)
     }
 
@@ -8693,6 +8792,13 @@ class VideoEditingActivity : AppCompatActivity() {
         return Triple(idx, item.transform ?: EditOperation.ClipTransform(), (globalTimeMs - start).coerceAtLeast(0L))
     }
 
+    /** Remove the keyframe at [rel], or add one holding the current (eased) value. */
+    private fun toggleKey(list: List<EditOperation.KeyframePoint>, rel: Long, default: Float): List<EditOperation.KeyframePoint> {
+        val i = list.indexOfFirst { Math.abs(it.timeMs - rel) < 150L }
+        return if (i != -1) list.filterIndexed { j, _ -> j != i }
+        else list + EditOperation.KeyframePoint(rel, com.tharunbirla.librecuts.models.keyframeValueAt(list, rel, default))
+    }
+
     private fun upsertKey(list: List<EditOperation.KeyframePoint>, p: EditOperation.KeyframePoint): List<EditOperation.KeyframePoint> {
         val m = list.toMutableList()
         val i = m.indexOfFirst { Math.abs(it.timeMs - p.timeMs) < 150L }
@@ -8705,6 +8811,8 @@ class VideoEditingActivity : AppCompatActivity() {
         "Clip Scale" -> t.scaleKeyframes
         "Clip Rotation" -> t.rotationKeyframes
         "Clip Opacity" -> t.opacityKeyframes
+        "Clip Tilt X" -> t.tiltXKeyframes
+        "Clip Tilt Y" -> t.tiltYKeyframes
         else -> emptyList()
     }
 
@@ -8713,6 +8821,8 @@ class VideoEditingActivity : AppCompatActivity() {
         "Clip Scale" -> t.copy(scaleKeyframes = keys)
         "Clip Rotation" -> t.copy(rotationKeyframes = keys)
         "Clip Opacity" -> t.copy(opacityKeyframes = keys)
+        "Clip Tilt X" -> t.copy(tiltXKeyframes = keys)
+        "Clip Tilt Y" -> t.copy(tiltYKeyframes = keys)
         else -> t
     }
 
@@ -8792,7 +8902,14 @@ class VideoEditingActivity : AppCompatActivity() {
         popup.menu.add("Clip Scale")
         popup.menu.add("Clip Rotation")
         popup.menu.add("Clip Opacity")
+        popup.menu.add("Clip Tilt X")
+        popup.menu.add("Clip Tilt Y")
+        popup.menu.add("Effects…")
         popup.setOnMenuItemClickListener { item ->
+            if (item.title.toString() == "Effects…") {
+                showClipEffectsDialog()
+                return@setOnMenuItemClickListener true
+            }
             activeKeyframeProperty = item.title.toString()
             val toolbar = keyframeEditingToolbar ?: return@setOnMenuItemClickListener true
             toolbar.findViewById<Button>(R.id.btnKeyframeProperty)?.text = activeKeyframeProperty
@@ -8806,6 +8923,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     "Clip Scale" -> { slider?.valueFrom = 10f; slider?.valueTo = 300f; slider?.stepSize = 1f }
                     "Clip Rotation" -> { slider?.valueFrom = -180f; slider?.valueTo = 180f; slider?.stepSize = 1f }
                     "Clip Opacity" -> { slider?.valueFrom = 0f; slider?.valueTo = 100f; slider?.stepSize = 1f }
+                    "Clip Tilt X", "Clip Tilt Y" -> { slider?.valueFrom = -80f; slider?.valueTo = 80f; slider?.stepSize = 1f }
                 }
             }
             updateDraggableOverlayFromKeyframes(getGlobalPosition())
@@ -8827,6 +8945,8 @@ class VideoEditingActivity : AppCompatActivity() {
                     "Clip Position" -> { val p = t.positionAt(rel); EditOperation.KeyframePoint(rel, p.first, p.second) }
                     "Clip Scale" -> EditOperation.KeyframePoint(rel, t.scaleAt(rel))
                     "Clip Rotation" -> EditOperation.KeyframePoint(rel, t.rotationAt(rel))
+                    "Clip Tilt X" -> EditOperation.KeyframePoint(rel, t.tiltXAt(rel))
+                    "Clip Tilt Y" -> EditOperation.KeyframePoint(rel, t.tiltYAt(rel))
                     else -> EditOperation.KeyframePoint(rel, t.opacityAt(rel))
                 }
             )
@@ -8854,6 +8974,14 @@ class VideoEditingActivity : AppCompatActivity() {
                 tv?.text = "${value.toInt()}%"
                 t.copy(opacity = v, opacityKeyframes = upsertKey(t.opacityKeyframes, EditOperation.KeyframePoint(rel, v)))
             }
+            "Clip Tilt X" -> {
+                tv?.text = "${value.toInt()}°"
+                t.copy(tiltX = value, tiltXKeyframes = upsertKey(t.tiltXKeyframes, EditOperation.KeyframePoint(rel, value)))
+            }
+            "Clip Tilt Y" -> {
+                tv?.text = "${value.toInt()}°"
+                t.copy(tiltY = value, tiltYKeyframes = upsertKey(t.tiltYKeyframes, EditOperation.KeyframePoint(rel, value)))
+            }
             else -> return
         }
         commitMainClipTransform(idx, nt, rel)
@@ -8868,6 +8996,8 @@ class VideoEditingActivity : AppCompatActivity() {
             "Clip Scale" -> { val v = Math.round(t.scaleAt(rel) * 100f).toFloat(); tv?.text = "${v.toInt()}%"; v }
             "Clip Rotation" -> { val v = Math.round(t.rotationAt(rel)).toFloat(); tv?.text = "${v.toInt()}°"; v }
             "Clip Opacity" -> { val v = Math.round(t.opacityAt(rel) * 100f).toFloat(); tv?.text = "${v.toInt()}%"; v }
+            "Clip Tilt X" -> { val v = Math.round(t.tiltXAt(rel)).toFloat(); tv?.text = "${v.toInt()}°"; v }
+            "Clip Tilt Y" -> { val v = Math.round(t.tiltYAt(rel)).toFloat(); tv?.text = "${v.toInt()}°"; v }
             else -> null
         }
         if (shown != null && slider != null) slider.value = shown.coerceIn(slider.valueFrom, slider.valueTo)
@@ -8887,6 +9017,8 @@ class VideoEditingActivity : AppCompatActivity() {
         val popup = androidx.appcompat.widget.PopupMenu(this, view)
         popup.menu.add("Position")
         if (op !is EditOperation.NullLayer) popup.menu.add("Opacity")
+        if (op is EditOperation.AddText || op is EditOperation.AddImageOverlay) popup.menu.add("Scale")
+        if (op is EditOperation.AddImageOverlay) popup.menu.add("Rotation")
         if (op is EditOperation.AddImageOverlay) {
             val isVideo = op.fileDurationMs != null && op.fileDurationMs > 0
             if (isVideo) {
@@ -8935,6 +9067,16 @@ class VideoEditingActivity : AppCompatActivity() {
                         slider?.valueFrom = 0.25f
                         slider?.valueTo = 4.0f
                         slider?.stepSize = 0.05f
+                    }
+                    "Scale" -> {
+                        slider?.valueFrom = 10.0f
+                        slider?.valueTo = 400.0f
+                        slider?.stepSize = 1.0f
+                    }
+                    "Rotation" -> {
+                        slider?.valueFrom = -180.0f
+                        slider?.valueTo = 180.0f
+                        slider?.stepSize = 1.0f
                     }
                     "Mask Size" -> {
                         slider?.valueFrom = 1.0f
@@ -9006,6 +9148,8 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                             viewModel.updateOperation(op.copy(speedKeyframes = currentList))
                         }
+                        "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = toggleKey(op.scaleKeyframes, relativeTimeMs, 1f)))
+                        "Rotation" -> viewModel.updateOperation(op.copy(rotationKeyframes = toggleKey(op.rotationKeyframes, relativeTimeMs, op.rotationAngle)))
                         "Mask Position" -> {
                             val mc = op.maskConfig
                             val currentList = mc.positionKeyframes.toMutableList()
@@ -9078,6 +9222,7 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                             viewModel.updateOperation(op.copy(opacityKeyframes = currentList))
                         }
+                        "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = toggleKey(op.scaleKeyframes, relativeTimeMs, 1f)))
                     }
                 }
                 else -> {}
@@ -9176,6 +9321,8 @@ class VideoEditingActivity : AppCompatActivity() {
                                 if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                                 viewModel.updateOperation(op.copy(speedKeyframes = currentList))
                             }
+                            "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = upsertKey(op.scaleKeyframes, EditOperation.KeyframePoint(relativeTimeMs, value / 100f))))
+                            "Rotation" -> viewModel.updateOperation(op.copy(rotationKeyframes = upsertKey(op.rotationKeyframes, EditOperation.KeyframePoint(relativeTimeMs, value))))
                             "Mask Size" -> {
                                 val currentList = mc.sizeKeyframes.toMutableList()
                                 val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
@@ -9213,6 +9360,8 @@ class VideoEditingActivity : AppCompatActivity() {
                             val newPoint = EditOperation.KeyframePoint(relativeTimeMs, opacityValue)
                             if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                             viewModel.updateOperation(op.copy(opacityKeyframes = currentList))
+                        } else if (activeKeyframeProperty == "Scale") {
+                            viewModel.updateOperation(op.copy(scaleKeyframes = upsertKey(op.scaleKeyframes, EditOperation.KeyframePoint(relativeTimeMs, value / 100f))))
                         }
                     }
                     else -> {}
@@ -9269,6 +9418,7 @@ class VideoEditingActivity : AppCompatActivity() {
             val has = mainClipKeys(ctx.second).any { Math.abs(it.timeMs - ctx.third) < 150L }
             keyframeEditingToolbar?.findViewById<ImageButton>(R.id.btnKeyframeAction)
                 ?.setImageResource(if (has) R.drawable.ic_keyframe_remove else R.drawable.ic_keyframe_add)
+            updateKeyframeGraph(globalTimeMs)
             return
         }
         val selectedId = viewModel.selectedOperationId.value
@@ -9291,6 +9441,8 @@ class VideoEditingActivity : AppCompatActivity() {
                             "Position" -> op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Speed" -> op.speedKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            "Scale" -> op.scaleKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            "Rotation" -> op.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Mask Position" -> op.maskConfig.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Mask Size" -> op.maskConfig.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Mask Rotation" -> op.maskConfig.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
@@ -9302,6 +9454,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         when (activeKeyframeProperty) {
                             "Position" -> op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
+                            "Scale" -> op.scaleKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             else -> false
                         }
                     }
@@ -9354,6 +9507,8 @@ class VideoEditingActivity : AppCompatActivity() {
                     "Position" -> op.positionKeyframes
                     "Opacity" -> op.opacityKeyframes
                     "Speed" -> op.speedKeyframes
+                    "Scale" -> op.scaleKeyframes
+                    "Rotation" -> op.rotationKeyframes
                     else -> null
                 }
             }
@@ -9362,6 +9517,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 list = when (activeKeyframeProperty) {
                     "Position" -> op.positionKeyframes
                     "Opacity" -> op.opacityKeyframes
+                    "Scale" -> op.scaleKeyframes
                     else -> null
                 }
             }
@@ -9369,7 +9525,9 @@ class VideoEditingActivity : AppCompatActivity() {
                 rel = globalTimeMs - (op.startTimeMs ?: 0L)
                 list = if (activeKeyframeProperty == "Position") op.positionKeyframes else null
             }
-            else -> {}
+            else -> if (isMainClipKeyframeMode()) {
+                mainClipContext(globalTimeMs)?.let { (_, t, r) -> list = mainClipKeys(t); rel = r }
+            }
         }
         val kf = list?.firstOrNull { Math.abs(it.timeMs - rel) < 150L }
         if (kf == null) {
@@ -9384,21 +9542,29 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun setKeyframeEasing(prop: String, rel: Long, type: String) {
-        val selectedId = viewModel.selectedOperationId.value
-        val op = viewModel.project.value?.operations?.find { it.id == selectedId } ?: return
         fun retag(l: List<EditOperation.KeyframePoint>) = l.map {
             if (Math.abs(it.timeMs - rel) < 150L) it.copy(interpolationType = type) else it
         }
+        if (isMainClipKeyframeMode()) {
+            val (idx, t, r) = mainClipContext(getGlobalPosition()) ?: return
+            commitMainClipTransform(idx, withMainClipKeys(t, retag(mainClipKeys(t))), r)
+            return
+        }
+        val selectedId = viewModel.selectedOperationId.value
+        val op = viewModel.project.value?.operations?.find { it.id == selectedId } ?: return
         when (op) {
             is EditOperation.AddImageOverlay -> when (prop) {
                 "Position" -> viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
                 "Opacity" -> viewModel.updateOperation(op.copy(opacityKeyframes = retag(op.opacityKeyframes)))
                 "Speed" -> viewModel.updateOperation(op.copy(speedKeyframes = retag(op.speedKeyframes)))
+                "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = retag(op.scaleKeyframes)))
+                "Rotation" -> viewModel.updateOperation(op.copy(rotationKeyframes = retag(op.rotationKeyframes)))
                 else -> {}
             }
             is EditOperation.AddText -> when (prop) {
                 "Position" -> viewModel.updateOperation(op.copy(positionKeyframes = retag(op.positionKeyframes)))
                 "Opacity" -> viewModel.updateOperation(op.copy(opacityKeyframes = retag(op.opacityKeyframes)))
+                "Scale" -> viewModel.updateOperation(op.copy(scaleKeyframes = retag(op.scaleKeyframes)))
                 else -> {}
             }
             is EditOperation.NullLayer -> if (prop == "Position") {
@@ -9439,15 +9605,26 @@ class VideoEditingActivity : AppCompatActivity() {
                     
                     val evaluatedMask = op.maskConfig.evaluatedAt(relativeTimeMs)
                     
+                    val imgScale = com.tharunbirla.librecuts.models.keyframeValueAt(op.scaleKeyframes, relativeTimeMs, 1f)
+                    val imgRotation = com.tharunbirla.librecuts.models.keyframeValueAt(op.rotationKeyframes, relativeTimeMs, op.rotationAngle)
                     draggableImageOverlay?.setProperties(
                         interpolatedPos.first,
                         interpolatedPos.second,
-                        op.relativeWidth,
-                        op.relativeHeight,
-                        op.rotationAngle,
+                        op.relativeWidth * imgScale,
+                        op.relativeHeight * imgScale,
+                        imgRotation,
                         interpolatedOpacity,
                         op.isMirrored
                     )
+                    if (activeKeyframeProperty == "Scale") {
+                        val v = Math.round(imgScale * 100f).toFloat().coerceIn(minVal, maxVal)
+                        slider?.value = v
+                        tvSliderValue?.text = "${v.toInt()}%"
+                    } else if (activeKeyframeProperty == "Rotation") {
+                        val v = Math.round(imgRotation).toFloat().coerceIn(minVal, maxVal)
+                        slider?.value = v
+                        tvSliderValue?.text = "${v.toInt()}°"
+                    }
                     draggableImageOverlay?.maskConfig = evaluatedMask
                     draggableImageOverlay?.isMaskEditingMode = evaluatedMask.shape != EditOperation.MaskShape.NONE
 
@@ -9507,6 +9684,15 @@ class VideoEditingActivity : AppCompatActivity() {
                         interpolatedPos.second,
                         interpolatedOpacity
                     )
+                    if (op.scaleKeyframes.isNotEmpty() || activeKeyframeProperty == "Scale") {
+                        val textScale = com.tharunbirla.librecuts.models.keyframeValueAt(op.scaleKeyframes, relativeTimeMs, 1f)
+                        draggableTextOverlay?.setFontSize(Math.round(op.fontSize * textScale).coerceAtLeast(1))
+                        if (activeKeyframeProperty == "Scale") {
+                            val v = Math.round(textScale * 100f).toFloat().coerceIn(minVal, maxVal)
+                            slider?.value = v
+                            tvSliderValue?.text = "${v.toInt()}%"
+                        }
+                    }
                     
                     if (activeKeyframeProperty == "Opacity") {
                         val progress = (interpolatedOpacity * 100).toInt()

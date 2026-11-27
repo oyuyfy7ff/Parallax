@@ -181,7 +181,8 @@ class TextOverlayView @JvmOverloads constructor(
                 val end = op.endTimeMs ?: Long.MAX_VALUE
                 if (currentPositionMs < start || currentPositionMs > end) continue
 
-                paint.textSize = op.fontSize * scale
+                paint.textSize = op.fontSize * scale *
+                    com.tharunbirla.librecuts.models.keyframeValueAt(op.scaleKeyframes, currentPositionMs - start, 1f)
                 if (op.fontPath != null) {
                     try {
                         paint.typeface = android.graphics.Typeface.createFromFile(op.fontPath)
